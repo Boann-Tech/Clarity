@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clarity — evidence for what you read</title>
+  <style>
+    :root {
+      --bg: #1a1a2e;
+      --card: #16213e;
+      --accent: #0f3460;
+      --text: #e0e0e0;
+      --text-muted: #8892b0;
+      --border: #233554;
+      --green: #4ade80;
+      --red: #f87171;
+      --amber: #fbbf24;
+      --gray: #9ca3af;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.5;
+      padding: 12px;
+      min-height: 100vh;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .header h1 {
+      font-size: 16px;
+      font-weight: 600;
+      flex: 1;
+    }
+
+    .status-badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 99px;
+      background: var(--accent);
+      color: var(--text-muted);
+    }
+
+    .status-badge.active {
+      background: var(--green);
+      color: #000;
+    }
+
+    .btn {
+      background: var(--accent);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      width: 100%;
+      transition: background 0.2s;
+    }
+
+    .btn:hover { background: var(--border); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .claim-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+
+    .claim-quote {
+      font-size: 13px;
+      margin-bottom: 8px;
+      padding: 6px 8px;
+      background: rgba(255,255,255,0.04);
+      border-radius: 4px;
+      border-left: 3px solid var(--accent);
+      word-break: break-word;
+    }
+
+    .verdict-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+
+    .verdict-label {
+      font-weight: 600;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 1px 6px;
+      border-radius: 3px;
+    }
+
+    .verdict-supported { color: var(--green); background: rgba(74,222,128,0.1); }
+    .verdict-contradicted { color: var(--red); background: rgba(248,113,113,0.1); }
+    .verdict-misleading { color: var(--amber); background: rgba(251,191,36,0.1); }
+    .verdict-unverified { color: var(--gray); background: rgba(156,163,175,0.1); }
+
+    .confidence-bar {
+      height: 4px;
+      border-radius: 2px;
+      background: var(--border);
+      margin: 6px 0;
+      overflow: hidden;
+    }
+
+    .confidence-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.3s ease;
+    }
+
+    .explanation {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .citations {
+      font-size: 11px;
+    }
+
+    .citation {
+      padding: 4px 0;
+      border-top: 1px solid rgba(255,255,255,0.04);
+    }
+
+    .citation a {
+      color: #60a5fa;
+      text-decoration: none;
+    }
+
+    .citation a:hover { text-decoration: underline; }
+
+    .citation-meta {
+      color: var(--text-muted);
+      font-size: 10px;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 32px 16px;
+      color: var(--text-muted);
+    }
+
+    .empty-state p { margin-bottom: 12px; }
+
+    .loading {
+      text-align: center;
+      padding: 24px;
+      color: var(--text-muted);
+    }
+
+    .spinner {
+      width: 20px;
+      height: 20px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 8px;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Clarity</h1>
+    <span class="status-badge" id="statusBadge">idle</span>
+  </div>
+
+  <button class="btn" id="checkBtn">Check claims on this page</button>
+
+  <div id="results" style="margin-top: 16px;">
+    <div class="empty-state" id="emptyState">
+      <p>Click "Check claims" to scan this page for factual claims and retrieve evidence.</p>
+      <p style="font-size: 12px;">Every verdict is backed by cited sources. No citations = Unverified.</p>
+    </div>
+  </div>
+
+  <script type="module" src="panel.js"></script>
+</body>
+</html>

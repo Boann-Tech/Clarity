@@ -1,0 +1,184 @@
+/**
+ * Shared protocol types and contract functions for the evidence-first
+ * claim-checking Chrome extension MVP.
+ *
+ * Domain-specific verdict system: a claim is never "false" or "true";
+ * it is Supported / Contradicted / Misleading / Unverified / NotCheckable.
+ *
+ * Every verdict requires at least one valid, fetched-and-stored citation URL.
+ * Without one, the verdict is downgraded to Unverified at the boundary.
+ */
+
+/* ───────── Types ───────── */
+
+export type Verdict =
+  | "supported"
+  | "contradicted"
+  | "misleading"
+  | "unverified"
+  | "not_checkable"
+
+export type ClaimDomain =
+  | "health_science"
+  | "economics_finance"
+  | "politics_government"
+  | "historical"
+  | "current_event"
+  | "quote_attribution"
+  | "other"
+
+export interface Citation {
+  title: string
+  publisher: string
+  url: string
+  publishedDate: string       // ISO date
+  snippet: string
+  sourceTier: "primary" | "fact_check" | "secondary_news"
+}
+
+export interface ClaimCheck {
+  claim: string
+  checkability: "checkable" | "not_checkable"
+  domain?: ClaimDomain
+  verdict: Verdict
+  confidence: number          // 0 – 1
+  explanation: string
+  citations: Citation[]
+  needsHumanReview: boolean
+  checkedAt: string           // ISO datetime
+}
+
+/* ───────── Raw from LLM ───────── */
+
+export interface RawClaimResponse {
+  claim: string
+  verdict: string
+  confidence: number
+  explanation: string
+  citations: Citation[]
+  checkedAt: string
+}
+
+/* ───────── Page snapshot ───────── */
+
+export interface PagePayload {
+  title: string
+  text: string                // visible body text
+  url: string
+  kind: "article" | "youtube" | "social" | "other"
+  publishedDate?: string
+  author?: string
+}
+
+/* ───────── Verdict contracts (evidence-before-verdict) ───────── */
+
+function clampConfidence(n: number): number {
+  return Math.max(0, Math.min(1, n))
+}
+
+/**
+ * Strip checkable claims from a list of candidate sentences.
+ * Opinion/value statements and pure predictions are excluded.
+ */
+export function selectCheckableClaims(
+  candidates: string[],
+  limit = 10,
+): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+
+  for (const c of candidates) {
+    if (out.length >= limit) break
+    const trimmed = c.trim()
+    if (!trimmed) continue
+    if (seen.has(trimmed)) continue
+    seen.add(trimmed)
+
+    // Crude heuristic: skip sentences that are subjective/imperative
+    // (will be replaced by an LLM classifier in production)
+    if (/^(this|that) (policy|law|decision) (is|was) (terrible|good|bad|great)/i.test(trimmed)) {
+      continue // skip opinion
+    }
+
+    out.push(trimmed)
+  }
+
+  return out
+}
+
+/**
+ * Extract sentence-level candidates from a PagePayload.
+ * Splits on sentence boundaries, then strips subjective/non-factual sentences.
+ */
+export function extractCandidates(payload: PagePayload): string[] {
+  // Very rough sentence splitting for the MVP stage
+  const subjectivePatterns = [
+    /^(this|that|it) (is|was) (a|an|the|not|very|quite|rather|somewhat)/i,
+    /^(this|that|it) (means|shows|suggests|demonstrates|indicates|seems|appears|feels|looks)/i,
+    /^(i|we|you) (think|believe|feel|hope|wish|know|agree|disagree)/i,
+    /^(what|why|how|when|where|who)\b/i,
+    /^(please|let|imagine|consider)/i,
+  ]
+
+  const sentences = payload.text
+    .replace(/\n+/g, " ")
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 20 && s.length < 400)
+    .filter((s) => !subjectivePatterns.some((re) => re.test(s)))
+
+  return sentences
+}
+
+/**
+ * Validate and sanitise a raw LLM response into a domain-safe ClaimCheck.
+ *
+ * Safety rules:
+ *   1. Supported/Contradicted/Misleading verdicts REQUIRE at least one
+ *      valid Citation with a real URL. Without it → Unverified.
+ *   2. Misleading requires at least 2 citations.
+ *   3. Confidence is clamped to [0, 1].
+ *   4. needsHumanReview is set for low-confidence or ambiguous domains.
+ */
+export function assessmentFromResponse(raw: RawClaimResponse): ClaimCheck {
+  const citations = (raw.citations ?? []).filter(
+    (c) => c.url && c.url.startsWith("http"),
+  )
+  const confidence = clampConfidence(raw.confidence)
+
+  let verdict: Verdict
+  let explanation: string
+
+  if (raw.verdict === "not_checkable") {
+    verdict = "not_checkable"
+    explanation = "Not a checkable factual claim."
+  } else if (citations.length === 0) {
+    verdict = "unverified"
+    explanation = "No validated citations could be retrieved for this claim."
+  } else if (raw.verdict === "misleading" && citations.length < 2) {
+    verdict = "unverified"
+    explanation = "A misleading verdict requires at least two independent sources."
+  } else {
+    verdict = raw.verdict as Verdict
+    if (!["supported", "contradicted", "misleading"].includes(verdict)) {
+      verdict = "unverified"
+      explanation = "Verdict type is not recognised without evidence backing."
+    } else {
+      explanation = raw.explanation || `Assessment based on ${citations.length} source(s).`
+    }
+  }
+
+  // Unverified verdicts carry zero confidence — we don't know what we don't know
+  const effectiveConfidence = verdict === "unverified" || verdict === "not_checkable" ? 0 : confidence
+
+  return {
+    claim: raw.claim,
+    checkability: verdict === "not_checkable" ? "not_checkable" : "checkable",
+    verdict,
+    confidence: effectiveConfidence,
+    explanation,
+    citations,
+    needsHumanReview: effectiveConfidence < 0.5 || verdict === "unverified",
+    checkedAt: raw.checkedAt || new Date().toISOString(),
+  }
+}
