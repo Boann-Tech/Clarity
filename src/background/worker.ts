@@ -22,7 +22,7 @@ const CACHE_TTL_MS = 30 * 60 * 1000 // 30 minutes
 /* ───────── Entry point ───────── */
 
 chrome.runtime.onInstalled.addListener(() => {
-  console.log("[Verify] Extension installed. Side panel available.")
+  console.log("[Clarity] Extension installed. Side panel available.")
 })
 
 // Open side panel when the toolbar icon is clicked
@@ -131,7 +131,7 @@ async function searchEvidence(claimText: string): Promise<import("../shared/prot
   return []
 
   /* Phase 2 implementation sketch:
-  const response = await fetch("https://verify.boanntech.com/api/check", {
+  const response = await fetch("https://clarity.boanntech.com/api/check", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ claim: claimText, sources: TRUSTED_SOURCES }),

@@ -180,7 +180,7 @@ async function checkPage() {
     emptyState.innerHTML = `<p>Could not communicate with this page. Reload and try again.</p>`
     emptyState.style.display = "block"
     setStatus("error")
-    console.error("[Verify] panel error:", err)
+    console.error("[Clarity] panel error:", err)
   } finally {
     setLoading(false)
   }
