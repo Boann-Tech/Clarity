@@ -13,15 +13,10 @@ class Settings:
     port: int = int(os.getenv("CLARITY_PORT", "8080"))
     debug: bool = os.getenv("CLARITY_DEBUG", "false").lower() == "true"
 
-    # Search — at least one provider must be configured
-    # 1) DuckDuckGo (no API key, rate-limited — good for MVP)
+    # Search backends
     ddg_enabled: bool = os.getenv("CLARITY_DDG_ENABLED", "true").lower() == "true"
-
-    # 2) Google Custom Search (recommended for production)
     google_api_key: str | None = os.getenv("CLARITY_GOOGLE_API_KEY")
     google_cse_id: str | None = os.getenv("CLARITY_GOOGLE_CSE_ID")
-
-    # 3) SerpAPI (alternative)
     serpapi_key: str | None = os.getenv("CLARITY_SERPAPI_KEY")
 
     # Evidence fetching
@@ -32,16 +27,20 @@ class Settings:
         "Clarity/1.0 (+https://github.com/boanntech/clarity) evidence-checker"
     )
 
-    # LLM (optional — for claim normalization and evidence synthesis)
-    openai_api_key: str | None = os.getenv("CLARITY_OPENAI_API_KEY")
-    openai_model: str = os.getenv("CLARITY_OPENAI_MODEL", "gpt-4o-mini")
+    # LLM — DeepSeek Pro (OpenAI-compatible)
+    deepseek_api_key: str | None = os.getenv("CLARITY_DEEPSEEK_API_KEY")
+    deepseek_model: str = os.getenv("CLARITY_DEEPSEEK_MODEL", "deepseek-chat")
+    deepseek_base_url: str = os.getenv(
+        "CLARITY_DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"
+    )
+    llm_enabled: bool = os.getenv("CLARITY_LLM_ENABLED", "true").lower() == "true"
 
     # Rate limiting
     rate_limit_per_minute: int = int(os.getenv("CLARITY_RATE_LIMIT", "10"))
     rate_limit_per_hour: int = int(os.getenv("CLARITY_RATE_LIMIT_HOUR", "50"))
 
     # Cache
-    cache_ttl_seconds: int = int(os.getenv("CLARITY_CACHE_TTL", "1800"))  # 30 min
+    cache_ttl_seconds: int = int(os.getenv("CLARITY_CACHE_TTL", "1800"))
 
     # CORS — comma-separated origins
     cors_origins: list[str] = field(default_factory=lambda: os.getenv(

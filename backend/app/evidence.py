@@ -260,6 +260,7 @@ def estimate_publish_date(html: str) -> str | None:
 async def retrieve_evidence(
     claim: str,
     max_sources: int = 8,
+    use_llm: bool = False,
 ) -> list[dict]:
     """Full evidence retrieval pipeline.
 
@@ -305,6 +306,31 @@ async def retrieve_evidence(
 
     # Step 4: Deduplicate, classify, rank
     ranked = deduplicate_and_rank(raw_sources)
+
+    # Step 4b: Optional LLM passage classification
+    if use_llm and ranked:
+        try:
+            from app.llm import classify_passages
+
+            passage_inputs = []
+            for i, src in enumerate(ranked):
+                passage_inputs.append({
+                    "index": i,
+                    "text": src.get("snippet", "")[:800],
+                    "url": src.get("url", ""),
+                    "tier": src.get("tier", "unknown"),
+                })
+            classified = classify_passages(claim, passage_inputs)
+            # Merge LLM classifications back into ranked sources
+            for classified_p in classified:
+                idx = classified_p.get("index")
+                if idx is not None and idx < len(ranked):
+                    ranked[idx]["relation"] = classified_p.get("relation", "context")
+                    ranked[idx]["llm_confidence"] = classified_p.get("llm_confidence", 0.5)
+                    ranked[idx]["reasoning"] = classified_p.get("reasoning", "")
+        except Exception:
+            for src in ranked:
+                src.setdefault("relation", "context")
 
     # Step 5: Format as citations
     now = datetime.now(timezone.utc).isoformat()
