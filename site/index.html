@@ -508,17 +508,24 @@
 <section id="install" style="background: var(--bg2); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); text-align: center;">
   <div class="container">
     <h2><span class="emoji">&#x1F4E5;</span>Install Clarity</h2>
-    <p style="max-width: 480px; margin: 0 auto 8px;">
-      Currently in MVP Phase 1. The UI, extraction, and verdict protocol are functional.
-      Evidence search is ready for Phase 2 backend integration.
+    <p style="max-width: 520px; margin: 0 auto 8px;">
+      <strong>Phase 1</strong> ✅ Extension — UI, extraction, verdict protocol<br />
+      <strong>Phase 2</strong> ✅ Backend — FastAPI, evidence retrieval, source tiering<br />
+      <strong>Phase 3</strong> ✅ Cross-platform — Twitter/X, Reddit, Facebook + history &amp; settings<br />
+      <strong>Phase 4</strong> 🏗️ Audio transcription, multi-language, breaking-news monitoring
+    </p>
+    <p style="max-width: 480px; margin: 12px auto;">
+      The full-stack Clarity system is ready. Run the backend with Docker, load the extension, and start checking claims.
     </p>
 
     <div class="install-btns">
       <a href="https://github.com/boanntech/clarity" class="btn">Install from source</a>
+      <a href="#how-it-works" class="btn btn-secondary">How it works</a>
     </div>
 
     <p style="margin-top: 16px; font-size: 0.85rem; color: var(--text-muted);">
-      Load <code>dist/</code> as an unpacked extension at <code>chrome://extensions</code>.
+      <code>cd backend && docker build -t clarity-backend . && docker run -p 8080:8080 clarity-backend</code><br />
+      Then load <code>extension/dist/</code> at <code>chrome://extensions</code>.
     </p>
   </div>
 </section>
