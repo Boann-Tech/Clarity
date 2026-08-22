@@ -26,17 +26,59 @@
       color: var(--text);
       font-size: 14px;
       line-height: 1.5;
-      padding: 12px;
+      padding: 0;
       min-height: 100vh;
     }
+
+    /* ── Tab bar ── */
+
+    .tab-bar {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+      background: var(--card);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .tab-btn {
+      flex: 1;
+      padding: 10px 8px;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+      border-bottom: 2px solid transparent;
+    }
+
+    .tab-btn:hover {
+      color: var(--text);
+    }
+
+    .tab-btn.tab-active {
+      color: var(--green);
+      border-bottom-color: var(--green);
+    }
+
+    .tab-content {
+      display: none;
+      padding: 12px;
+    }
+
+    .tab-content.tab-visible {
+      display: block;
+    }
+
+    /* ── Header ── */
 
     .header {
       display: flex;
       align-items: center;
       gap: 8px;
-      margin-bottom: 16px;
-      padding-bottom: 12px;
-      border-bottom: 1px solid var(--border);
+      margin-bottom: 12px;
     }
 
     .header h1 {
@@ -58,6 +100,11 @@
       color: #000;
     }
 
+    .status-badge.error {
+      background: var(--red);
+      color: #000;
+    }
+
     .btn {
       background: var(--accent);
       color: var(--text);
@@ -72,6 +119,28 @@
 
     .btn:hover { background: var(--border); }
     .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-sm { width: auto; padding: 4px 10px; font-size: 11px; }
+
+    /* ── Progress bar ── */
+
+    #progressContainer {
+      height: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      margin: 8px 0;
+      overflow: hidden;
+      display: none;
+    }
+
+    #progressBar {
+      height: 100%;
+      width: 0%;
+      background: var(--accent);
+      transition: width 0.3s ease;
+      border-radius: 2px;
+    }
+
+    /* ── Claim cards ── */
 
     .claim-card {
       background: var(--card);
@@ -132,9 +201,7 @@
       margin-bottom: 8px;
     }
 
-    .citations {
-      font-size: 11px;
-    }
+    .citations { font-size: 11px; }
 
     .citation {
       padding: 4px 0;
@@ -153,6 +220,8 @@
       font-size: 10px;
     }
 
+    /* ── Empty state ── */
+
     .empty-state {
       text-align: center;
       padding: 32px 16px;
@@ -160,6 +229,80 @@
     }
 
     .empty-state p { margin-bottom: 12px; }
+
+    /* ── History ── */
+
+    .history-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+
+    .history-card:hover { border-color: var(--accent); }
+
+    .history-claim {
+      font-size: 12px;
+      margin-bottom: 4px;
+      word-break: break-word;
+    }
+
+    .history-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .history-date {
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+
+    /* ── Settings ── */
+
+    .settings-group {
+      margin-bottom: 16px;
+    }
+
+    .settings-group label {
+      display: block;
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+
+    .settings-group input {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--card);
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    .settings-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 16px;
+    }
+
+    .settings-status {
+      font-size: 11px;
+      color: var(--green);
+      margin-top: 8px;
+    }
+
+    .settings-footer {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 24px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
 
     .loading {
       text-align: center;
@@ -181,17 +324,72 @@
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>Clarity</h1>
-    <span class="status-badge" id="statusBadge">idle</span>
+
+  <!-- Tab bar -->
+  <div class="tab-bar">
+    <button class="tab-btn tab-active" id="tabCheck">Check</button>
+    <button class="tab-btn" id="tabHistory">History</button>
+    <button class="tab-btn" id="tabSettings">Settings</button>
   </div>
 
-  <button class="btn" id="checkBtn">Check claims on this page</button>
+  <!-- Check tab -->
+  <div class="tab-content tab-visible" id="panelCheck">
+    <div class="header">
+      <h1>Clarity</h1>
+      <span class="status-badge" id="statusBadge">idle</span>
+    </div>
 
-  <div id="results" style="margin-top: 16px;">
-    <div class="empty-state" id="emptyState">
-      <p>Click "Check claims" to scan this page for factual claims and retrieve evidence.</p>
-      <p style="font-size: 12px;">Every verdict is backed by cited sources. No citations = Unverified.</p>
+    <button class="btn" id="checkBtn">Check claims on this page</button>
+    <div id="progressContainer"><div id="progressBar"></div></div>
+
+    <div id="results" style="margin-top: 12px;">
+      <div class="empty-state" id="emptyState">
+        <p>Click "Check claims" to scan this page for factual claims and retrieve evidence.</p>
+        <p style="font-size: 12px;">Every verdict is backed by cited sources. No citations = Unverified.</p>
+      </div>
+    </div>
+
+    <div class="settings-footer">
+      <p>Clarity v0.1.0 &mdash; Evidence for what you read.</p>
+    </div>
+  </div>
+
+  <!-- History tab -->
+  <div class="tab-content" id="panelHistory">
+    <div class="header">
+      <h1>History</h1>
+      <button class="btn btn-sm" id="clearHistoryBtn">Clear</button>
+    </div>
+    <div id="historyList">
+      <p style="color:var(--text-muted);text-align:center;padding:16px;">No checks yet.</p>
+    </div>
+  </div>
+
+  <!-- Settings tab -->
+  <div class="tab-content" id="panelSettings">
+    <div class="header">
+      <h1>Settings</h1>
+    </div>
+
+    <div class="settings-group">
+      <label for="settingsBackendUrl">Backend URL</label>
+      <input type="url" id="settingsBackendUrl" placeholder="http://localhost:8080" />
+    </div>
+
+    <div class="settings-group">
+      <label for="settingsMaxClaims">Max claims per page</label>
+      <input type="number" id="settingsMaxClaims" min="1" max="20" />
+    </div>
+
+    <div class="settings-actions">
+      <button class="btn btn-sm" id="saveSettingsBtn">Save</button>
+      <button class="btn btn-sm" id="resetSettingsBtn" style="background:transparent;">Reset defaults</button>
+    </div>
+    <span class="settings-status" id="settingsStatus"></span>
+
+    <div class="settings-footer">
+      <p>Clarity v0.1.0 &mdash; Built by <a href="https://boanntech.com" style="color:var(--accent);">BoannTech</a>, Dundalk, Ireland.</p>
+      <p style="margin-top:4px;">Feedback: <a href="mailto:clarity@boanntech.com" style="color:var(--accent);">clarity@boanntech.com</a></p>
     </div>
   </div>
 

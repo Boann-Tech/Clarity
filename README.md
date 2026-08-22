@@ -57,6 +57,30 @@ Not all sources are equal. Clarity ranks them by authority and independence:
 
 Unverified blogs, anonymous forum posts, AI-generated content, and social media are never used as evidence.
 
+## Backend
+
+The evidence retrieval backend is a standalone FastAPI service at `backend/`.
+
+```bash
+cd backend
+cp .env.example .env      # configure search backends
+uvicorn app.main:app --reload --port 8080
+
+# Or with Docker:
+docker build -t clarity-backend .
+docker run -p 8080:8080 clarity-backend
+```
+
+**Endpoints:**
+- `POST /api/check` — Check a claim. Request: `{"claim": "..."}` → Response with citations and assessment
+- `GET /api/health` — Health check
+
+**Search backends** (configure one):
+1. **DuckDuckGo** (free, no key, rate-limited, enabled by default)
+2. **Google Custom Search** (recommended — 100 free queries/day)
+
+**Evidence pipeline:** Search → Fetch pages → Extract relevant passages → Classify source tier → Deduplicate and rank → Calculate verdict
+
 ## Architecture
 
 ```
@@ -98,14 +122,10 @@ Click the Clarity icon in the toolbar, or use the keyboard shortcut (default con
 
 ## Status
 
-**MVP Phase 1 completed.** The extension UI, extraction pipeline, verdict contract, and safety architecture are fully functional. The evidence search (`searchEvidence()` in worker.ts) currently returns an empty array — every claim correctly shows **Unverified**. Phase 2 adds a backend API that queries curated sources and fact-check databases.
-
-## Roadmap
-
-- **Phase 1** ✅ — Extension UI, text extraction, verdict protocol, build pipeline
-- **Phase 2** 🏗️ — Backend API (FastAPI), curated source index, evidence retrieval, citation validation
-- **Phase 3** — Cross-platform support (Twitter, Reddit, Facebook web), claim history
-- **Phase 4** — Audio transcription for YouTube videos without captions, multi-language
+**Phase 1** ✅ — Extension UI, text extraction, verdict protocol, build pipeline
+**Phase 2** ✅ — Backend API (FastAPI), evidence retrieval (DuckDuckGo + Google CSE), source tiering, verdict calculation, Docker
+**Phase 3** 🏗️ — Cross-platform support (Twitter, Reddit, Facebook), claim history, user settings
+**Phase 4** — Audio transcription, multi-language, breaking-news monitoring
 
 ## Contributing
 

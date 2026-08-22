@@ -4,15 +4,30 @@
  * Responsibilities:
  *   - Receives page text from content scripts
  *   - Routes claims to the verification pipeline
- *   - Manages auth, caching, and rate limiting
+ *   - Calls the Clarity backend API for evidence retrieval
+ *   - Caches results in memory
  *   - Opens the side panel on click
  *
  * Evidence-before-verdict rule: every supported/contradicted/misleading
  * verdict requires at least one fetched and validated citation URL.
  */
 
-import type { PagePayload, ClaimCheck } from "../shared/protocol.js"
+import type { PagePayload, ClaimCheck, Citation } from "../shared/protocol.js"
 import { extractCandidates, selectCheckableClaims, assessmentFromResponse } from "../shared/protocol.js"
+
+/* ───────── Configuration ───────── */
+
+const DEFAULT_BACKEND_URL = "http://localhost:8080"
+const STORAGE_KEY_BACKEND_URL = "clarity_backend_url"
+
+async function getBackendUrl(): Promise<string> {
+  try {
+    const result = await chrome.storage.local.get(STORAGE_KEY_BACKEND_URL)
+    return (result[STORAGE_KEY_BACKEND_URL] as string) || DEFAULT_BACKEND_URL
+  } catch {
+    return DEFAULT_BACKEND_URL
+  }
+}
 
 /* ───────── State ───────── */
 
@@ -39,23 +54,31 @@ chrome.action.onClicked.addListener(async (tab) => {
 /* ───────── Message handling ───────── */
 
 chrome.runtime.onMessage.addListener((
-  message: { type: string; payload: PagePayload },
+  message: { type: string; payload?: PagePayload; data?: Record<string, unknown> },
   _sender,
   sendResponse,
 ) => {
-  if (message.type === "CHECK_PAGE") {
+  if (message.type === "CHECK_PAGE" && message.payload) {
     handlePageCheck(message.payload)
       .then(sendResponse)
       .catch((err) => sendResponse({ error: err.message }))
-    return true // keep channel open for async response
+    return true
+  }
+  if (message.type === "GET_BACKEND_URL") {
+    getBackendUrl().then(sendResponse)
+    return true
   }
 })
 
 /* ───────── Verification pipeline ───────── */
 
-async function handlePageCheck(payload: PagePayload): Promise<{ claims: ClaimCheck[] }> {
+async function handlePageCheck(payload: PagePayload): Promise<{ claims: ClaimCheck[]; error?: string }> {
   const candidates = extractCandidates(payload)
   const checkableClaims = selectCheckableClaims(candidates, 10)
+
+  if (checkableClaims.length === 0) {
+    return { claims: [] }
+  }
 
   const results = await Promise.all(
     checkableClaims.map((claim) => verifySingleClaim(claim)),
@@ -71,14 +94,20 @@ async function verifySingleClaim(claimText: string): Promise<ClaimCheck> {
     return cached.result
   }
 
-  // 2. Run evidence search
+  // 2. Run evidence search via backend
   const citations = await searchEvidence(claimText)
 
   // 3. Form assessment
-  // MVP: rules-based assessment based on what we found
-  const raw = citations.length === 0
-    ? { claim: claimText, verdict: "unverified", confidence: 0, explanation: "", citations: [], checkedAt: new Date().toISOString() }
-    : { claim: claimText, verdict: "supported", confidence: 0.7, explanation: `Found ${citations.length} relevant source(s).`, citations, checkedAt: new Date().toISOString() }
+  let raw: { claim: string; verdict: string; confidence: number; explanation: string; citations: Citation[]; checkedAt: string }
+
+  if (!citations) {
+    // Backend unreachable
+    raw = { claim: claimText, verdict: "unverified", confidence: 0, explanation: "Offline — the Clarity backend could not be reached. Check your connection or backend URL in Settings.", citations: [], checkedAt: new Date().toISOString() }
+  } else if (citations.length === 0) {
+    raw = { claim: claimText, verdict: "unverified", confidence: 0, explanation: "No validated citations could be retrieved for this claim.", citations: [], checkedAt: new Date().toISOString() }
+  } else {
+    raw = { claim: claimText, verdict: "supported", confidence: 0.7, explanation: `Found ${citations.length} relevant source(s) from curated evidence sources.`, citations, checkedAt: new Date().toISOString() }
+  }
 
   const result = assessmentFromResponse(raw)
 
@@ -88,56 +117,62 @@ async function verifySingleClaim(claimText: string): Promise<ClaimCheck> {
   return result
 }
 
-/* ───────── Evidence retrieval ───────── */
+/* ───────── Evidence retrieval via backend API ───────── */
 
-const TRUSTED_SOURCES: Array<{ domain: string; tier: "primary" | "fact_check" | "secondary_news" }> = [
-  // Health
-  { domain: "who.int", tier: "primary" },
-  { domain: "cdc.gov", tier: "primary" },
-  { domain: "nih.gov", tier: "primary" },
-  // Economics
-  { domain: "bls.gov", tier: "primary" },
-  { domain: "worldbank.org", tier: "primary" },
-  { domain: "imf.org", tier: "primary" },
-  { domain: "ecb.europa.eu", tier: "primary" },
-  { domain: "federalreserve.gov", tier: "primary" },
-  // Government & Law
-  { domain: "congress.gov", tier: "primary" },
-  { domain: "supremecourt.gov", tier: "primary" },
-  { domain: "gov.ie", tier: "primary" },
-  { domain: "eur-lex.europa.eu", tier: "primary" },
-  // Fact-checking orgs
-  { domain: "reuters.com", tier: "fact_check" },
-  { domain: "apnews.com", tier: "fact_check" },
-  { domain: "politifact.com", tier: "fact_check" },
-  { domain: "factcheck.org", tier: "fact_check" },
-  { domain: "snopes.com", tier: "fact_check" },
-  { domain: "fullfact.org", tier: "fact_check" },
-  // News (secondary)
-  { domain: "bbc.co.uk", tier: "secondary_news" },
-  { domain: "bbc.com", tier: "secondary_news" },
-  { domain: "theguardian.com", tier: "secondary_news" },
-  { domain: "nytimes.com", tier: "secondary_news" },
-]
+async function searchEvidence(claimText: string): Promise<Citation[] | null> {
+  const backendUrl = await getBackendUrl()
 
-/**
- * Search evidence for a claim. MVP implementation uses a placeholder
- * that returns mock citations. In production, this would call a backend
- * API that queries curated sources and fact-check databases.
- */
-async function searchEvidence(claimText: string): Promise<import("../shared/protocol.js").Citation[]> {
-  // Placeholder: return empty — the system correctly reports Unverified
-  // In Phase 1, this calls a backend FastAPI service.
-  return []
+  try {
+    const response = await fetch(`${backendUrl}/api/check`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ claim: claimText }),
+      signal: AbortSignal.timeout(15000), // 15s timeout
+    })
 
-  /* Phase 2 implementation sketch:
-  const response = await fetch("https://clarity.boanntech.com/api/check", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ claim: claimText, sources: TRUSTED_SOURCES }),
-  })
-  if (!response.ok) return []
-  const data = await response.json()
-  return data.citations as Citation[]
-  */
+    if (!response.ok) return []
+
+    const data = await response.json()
+
+    // Map backend response to protocol Citation type
+    const backendCitations = data.citations ?? []
+    const citations: Citation[] = backendCitations
+      .filter((c: Record<string, unknown>) => c.url && typeof c.url === "string" && c.url.startsWith("http"))
+      .map((c: Record<string, unknown>) => ({
+        title: String(c.title ?? "Untitled"),
+        publisher: String(c.publisher ?? c.tier ?? "unknown"),
+        url: String(c.url),
+        publishedDate: String(c.published_date ?? c.publishedDate ?? ""),
+        snippet: String(c.snippet ?? "").slice(0, 800),
+        sourceTier: mapTier(String(c.tier ?? "secondary_news")),
+      }))
+
+    return citations
+  } catch {
+    // Backend unreachable
+    return null
+  }
+}
+
+function mapTier(tier: string): Citation["sourceTier"] {
+  if (tier === "primary") return "primary"
+  if (tier === "fact_check") return "fact_check"
+  return "secondary_news"
+}
+
+/* ───────── Settings helpers (shared with panel) ───────── */
+
+export async function saveBackendUrl(url: string): Promise<void> {
+  await chrome.storage.local.set({ [STORAGE_KEY_BACKEND_URL]: url })
+}
+
+export async function testBackendConnection(url: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${url}/api/health`, {
+      signal: AbortSignal.timeout(5000),
+    })
+    return response.ok
+  } catch {
+    return false
+  }
 }
