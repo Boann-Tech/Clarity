@@ -201,7 +201,9 @@ def deduplicate_and_rank(sources: list[dict]) -> list[dict]:
         seen.add(url)
 
         sq = classify_domain(url)
-        if sq.tier == "excluded":
+        # Unknown/un-curated domains may be useful discovery leads, but must
+        # never become evidence cards or cross the public API boundary.
+        if sq.tier in {"excluded", "unknown"}:
             continue
 
         src["tier"] = sq.tier

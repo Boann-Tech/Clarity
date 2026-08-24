@@ -44,15 +44,15 @@ def test_classify_subdomain_match():
 
 def test_deduplicate_by_url():
     sources = [
-        {"url": "https://example.com/1", "title": "A"},
-        {"url": "https://example.com/1", "title": "A duplicate"},
-        {"url": "https://example.com/2", "title": "B"},
+        {"url": "https://reuters.com/article/1", "title": "A"},
+        {"url": "https://reuters.com/article/1", "title": "A duplicate"},
+        {"url": "https://apnews.com/article/2", "title": "B"},
     ]
     ranked = deduplicate_and_rank(sources)
     assert len(ranked) == 2  # duplicate removed
     urls = [r["url"] for r in ranked]
-    assert "https://example.com/1" in urls
-    assert "https://example.com/2" in urls
+    assert "https://reuters.com/article/1" in urls
+    assert "https://apnews.com/article/2" in urls
 
 
 def test_excluded_sources_filtered_out():
@@ -63,6 +63,19 @@ def test_excluded_sources_filtered_out():
     ranked = deduplicate_and_rank(sources)
     assert len(ranked) == 1
     assert ranked[0]["tier"] == "fact_check"
+
+
+def test_unknown_sources_are_not_returned_as_public_evidence():
+    """Uncurated domains must never reach the CitationSource response boundary."""
+    sources = [
+        {"url": "https://some-random-blog.com/post", "title": "Uncurated blog"},
+        {"url": "https://reuters.com/article", "title": "Trusted fact check"},
+    ]
+
+    ranked = deduplicate_and_rank(sources)
+
+    assert [source["url"] for source in ranked] == ["https://reuters.com/article"]
+    assert all(source["tier"] != "unknown" for source in ranked)
 
 
 # ── Verdict calculation ──
