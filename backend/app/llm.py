@@ -62,6 +62,13 @@ def _call_llm(
     if client is None:
         return None
 
+    logger.info(
+        "Bifrost LLM request: model=%s json_mode=%s max_tokens=%s",
+        settings.bifrost_model,
+        json_mode,
+        max_tokens,
+    )
+
     kwargs: dict[str, Any] = {
         "model": settings.bifrost_model,
         "messages": [
@@ -76,6 +83,7 @@ def _call_llm(
 
     try:
         resp = client.chat.completions.create(**kwargs)
+        logger.info("Bifrost LLM response received: model=%s", settings.bifrost_model)
         return resp.choices[0].message.content
     except Exception as first_error:
         # Some Bifrost-backed deployments do not expose response_format.

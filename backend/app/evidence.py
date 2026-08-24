@@ -13,6 +13,7 @@ import re
 import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
+from xml.etree import ElementTree as ET
 
 import httpx
 from app.config import settings
@@ -34,25 +35,28 @@ async def search_ddg(query: str, max_results: int = 10) -> list[dict]:
     try:
         async with httpx.AsyncClient(timeout=settings.fetch_timeout) as client:
             resp = await client.post(url, headers=headers, data=data)
+            # DDG returns HTTP 202 with a challenge/interstitial page when it
+            # blocks automated Lite search. Treat it as unavailable, never as
+            # an empty-but-valid result set.
+            if resp.status_code != 200 or "duckduckgo.com" not in str(resp.url):
+                return []
             resp.raise_for_status()
     except Exception:
         return []
 
-    # Parse the HTML response
+    # Parse only result links. A challenge page contains generic DDG links
+    # (such as the literal 'here' link) but no result-link markup.
     results = []
-    # Very rough DDG lite HTML parser
     html = resp.text
-    # Find result blocks
     blocks = re.findall(
-        r'<a[^>]*href="(https?://[^"]+)"[^>]*>(.*?)</a>',
+        r'<a[^>]+class=["\'][^"\']*result-link[^"\']*["\'][^>]*href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>',
         html,
-        re.IGNORECASE,
+        re.IGNORECASE | re.DOTALL,
     )
     seen = set()
     for href, title_text in blocks:
         if len(results) >= max_results:
             break
-        # Clean title
         title = re.sub(r"<[^>]+>", "", title_text).strip()
         if not title or href in seen:
             continue
@@ -64,6 +68,41 @@ async def search_ddg(query: str, max_results: int = 10) -> list[dict]:
             "source": "duckduckgo",
         })
 
+    return results
+
+
+async def search_bing_rss(query: str, max_results: int = 10) -> list[dict]:
+    """Search Bing's RSS endpoint as a no-key fallback.
+
+    This is deliberately a fallback, not an evidence source. Returned URLs
+    still pass through Clarity's trusted-domain allowlist before display.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=settings.fetch_timeout) as client:
+            response = await client.get(
+                "https://www.bing.com/search",
+                params={"format": "rss", "q": query},
+                headers={"User-Agent": settings.user_agent},
+            )
+            response.raise_for_status()
+        root = ET.fromstring(response.content)
+    except Exception:
+        return []
+
+    results = []
+    for item in root.findall(".//item"):
+        link = (item.findtext("link") or "").strip()
+        title = (item.findtext("title") or "").strip()
+        snippet = (item.findtext("description") or "").strip()
+        if link and title:
+            results.append({
+                "title": title,
+                "url": link,
+                "snippet": snippet,
+                "source": "bing_rss",
+            })
+        if len(results) >= max_results:
+            break
     return results
 
 
@@ -106,16 +145,14 @@ async def search_evidence(query: str, max_results: int = 10) -> list[dict]:
     """
     all_results: list[dict] = []
 
-    # Run searches in parallel
+    # Run configured searches in parallel. Bing RSS is a no-key fallback
+    # when Lite DDG is challenged; evidence still requires a curated domain.
     tasks = []
     if settings.ddg_enabled:
         tasks.append(search_ddg(query, max_results))
     if settings.google_api_key and settings.google_cse_id:
         tasks.append(search_google(query, max_results))
-
-    if not tasks:
-        # No search backends configured
-        return []
+    tasks.append(search_bing_rss(query, max_results))
 
     import asyncio
     search_results = await asyncio.gather(*tasks, return_exceptions=True)
