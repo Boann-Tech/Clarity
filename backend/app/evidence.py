@@ -106,6 +106,126 @@ async def search_bing_rss(query: str, max_results: int = 10) -> list[dict]:
     return results
 
 
+async def search_brave(query: str, max_results: int = 10) -> list[dict]:
+    """Search Brave's web API when a production key is configured."""
+    if not settings.brave_search_api_key:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=settings.fetch_timeout) as client:
+            response = await client.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                params={"q": query, "count": min(max_results, 20)},
+                headers={
+                    "Accept": "application/json",
+                    "X-Subscription-Token": settings.brave_search_api_key,
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except Exception:
+        return []
+    return [
+        {
+            "title": item.get("title", ""),
+            "url": item.get("url", ""),
+            "snippet": item.get("description", ""),
+            "source": "brave_search",
+        }
+        for item in payload.get("web", {}).get("results", [])
+        if item.get("url")
+    ][:max_results]
+
+
+async def search_serpapi(query: str, max_results: int = 10) -> list[dict]:
+    """Search SerpAPI's Google engine when a production key is configured."""
+    if not settings.serpapi_key:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=settings.fetch_timeout) as client:
+            response = await client.get(
+                "https://serpapi.com/search.json",
+                params={
+                    "engine": "google",
+                    "q": query,
+                    "api_key": settings.serpapi_key,
+                    "num": min(max_results, 10),
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except Exception:
+        return []
+    return [
+        {
+            "title": item.get("title", ""),
+            "url": item.get("link", ""),
+            "snippet": item.get("snippet", ""),
+            "source": "serpapi",
+        }
+        for item in payload.get("organic_results", [])
+        if item.get("link")
+    ][:max_results]
+
+
+async def search_bls_cpi(claim: str) -> list[dict]:
+    """Retrieve US CPI-U annual evidence directly from the public BLS API.
+
+    This narrow connector bypasses generic search for US inflation claims and
+    returns a source card backed by BLS's CPI-U series (CUUR0000SA0).
+    """
+    lowered = claim.lower()
+    us_markers = ("us ", "u.s.", "united states", "american")
+    if not any(marker in lowered for marker in us_markers) or not any(
+        marker in lowered for marker in ("inflation", "cpi", "consumer price")
+    ):
+        return []
+
+    years = [int(value) for value in re.findall(r"\b(20\d{2})\b", claim)]
+    end_year = max(years) if years else datetime.now(timezone.utc).year - 1
+    start_year = max(1948, end_year - 1)
+    try:
+        async with httpx.AsyncClient(timeout=settings.fetch_timeout) as client:
+            response = await client.get(
+                "https://api.bls.gov/publicAPI/v2/timeseries/data/CUUR0000SA0",
+                params={"startyear": str(start_year), "endyear": str(end_year)},
+                headers={"User-Agent": settings.user_agent},
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except Exception:
+        return []
+
+    if payload.get("status") != "REQUEST_SUCCEEDED":
+        return []
+    series = payload.get("Results", {}).get("series", [])
+    data = series[0].get("data", []) if series else []
+    values = {
+        int(point["year"]): point["value"]
+        for point in data
+        if point.get("period") == "M12" and point.get("value") not in {None, "-"}
+    }
+    if end_year not in values or start_year not in values:
+        return []
+
+    current = float(values[end_year])
+    prior = float(values[start_year])
+    annual_change = ((current - prior) / prior) * 100
+    snippet = (
+        f"BLS CPI-U (not seasonally adjusted) was {current:.3f} in December {end_year}, "
+        f"compared with {prior:.3f} in December {start_year}: a {annual_change:.1f}% "
+        f"year-over-year increase."
+    )
+    return [{
+        "title": f"Consumer Price Index for All Urban Consumers (CPI-U), {end_year}",
+        "url": "https://www.bls.gov/cpi/",
+        "snippet": snippet,
+        "source": "bls_cpi_api",
+        "published_date": f"{end_year}-12-31",
+        "retrieval_status": "ok",
+        "relevance": 1.0,
+    }]
+
+
 async def search_google(query: str, max_results: int = 10) -> list[dict]:
     """Search via Google Custom Search JSON API."""
     if not settings.google_api_key or not settings.google_cse_id:
@@ -145,17 +265,34 @@ async def search_evidence(query: str, max_results: int = 10) -> list[dict]:
     """
     all_results: list[dict] = []
 
-    # Run configured searches in parallel. Bing RSS is a no-key fallback
-    # when Lite DDG is challenged; evidence still requires a curated domain.
+    # Direct primary-source connectors run first. They bypass generic search
+    # for domains where an authoritative structured API is available.
+    direct_results = await search_bls_cpi(query)
+
+    # A direct primary connector has already supplied structured, attributable
+    # evidence. Do not dilute it with generic search results for the same
+    # narrow claim type.
+    if direct_results:
+        return direct_results[:max_results]
+
+    # Run configured discovery searches in parallel. Bing RSS remains a
+    # no-key fallback; all returned pages still pass curated-domain filtering.
     tasks = []
     if settings.ddg_enabled:
         tasks.append(search_ddg(query, max_results))
     if settings.google_api_key and settings.google_cse_id:
         tasks.append(search_google(query, max_results))
+    if settings.brave_search_api_key:
+        tasks.append(search_brave(query, max_results))
+    if settings.serpapi_key:
+        tasks.append(search_serpapi(query, max_results))
+    # Last-resort no-key discovery fallback. It is not used when a direct
+    # connector supplies evidence, and all results still require validation.
     tasks.append(search_bing_rss(query, max_results))
 
     import asyncio
     search_results = await asyncio.gather(*tasks, return_exceptions=True)
+    all_results.extend(direct_results)
 
     for sr in search_results:
         if isinstance(sr, list):
@@ -335,6 +472,13 @@ async def retrieve_evidence(
     raw_sources: list[dict] = []
     for result in search_results[:max_sources]:
         url = result["url"]
+        # Structured API connectors already returned the factual passage and
+        # retrieval status. Preserve that evidence rather than scraping a
+        # marketing/landing page for the same source.
+        if result.get("source") == "bls_cpi_api":
+            raw_sources.append(result.copy())
+            continue
+
         html = await fetch_page(url)
         if not html:
             raw_sources.append({

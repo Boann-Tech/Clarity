@@ -133,8 +133,12 @@ async def check_claim(req: CheckRequest) -> CheckResponse:
         seen_urls.add(url)
         citations.append(c)
 
-    # Limit
-    citations = citations[:settings.max_sources_per_claim]
+    # Sources marked irrelevant by the Bifrost evidence classifier must never
+    # be rendered as citations, even if a prior process was running older code.
+    citations = [
+        citation for citation in citations
+        if citation.get("relation", "context") != "irrelevant"
+    ]
 
     # Step 5: Calculate verdict
     if llm_available and citations:

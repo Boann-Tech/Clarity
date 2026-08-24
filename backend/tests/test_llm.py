@@ -15,8 +15,10 @@ from app.llm import (
 # ── Claim Normalization ──
 
 
-def test_normalize_claim_fallback_without_api_key():
-    """Without API key, normalize_claim returns the raw claim as default."""
+def test_normalize_claim_fallback_without_api_key(monkeypatch):
+    """An unavailable gateway returns a safe raw-claim normalization."""
+    from app import llm
+    monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: None)
     result = normalize_claim("US inflation fell by 50% in 2024.")
     assert result["normalized_claim"] == "US inflation fell by 50% in 2024."
     assert result["checkable"] is True
@@ -24,7 +26,9 @@ def test_normalize_claim_fallback_without_api_key():
     assert "inflation" in result["search_queries"][0]
 
 
-def test_normalize_claim_short():
+def test_normalize_claim_short(monkeypatch):
+    from app import llm
+    monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: None)
     result = normalize_claim("Inflation is 3%.")
     assert result["normalized_claim"] == "Inflation is 3%."
     assert result["checkable"] is True
@@ -39,8 +43,10 @@ def test_classify_passages_empty():
     assert result == []
 
 
-def test_classify_passages_fallback():
-    """Without API key, all passages default to 'context' relation."""
+def test_classify_passages_fallback(monkeypatch):
+    """An unavailable gateway defaults passages to context."""
+    from app import llm
+    monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: None)
     passages = [
         {"index": 0, "text": "Inflation rose by 2.3% in May 2026.", "url": "https://example.com/1"},
         {"index": 1, "text": "The economy grew by 3% in Q2.", "url": "https://example.com/2"},
@@ -103,6 +109,33 @@ def test_synthesize_verdict_fallback_supported(monkeypatch):
     result = synthesize_verdict("Health claim test", passages)
     assert result["verdict"] == "supported"
     assert result["confidence"] > 0.5
+
+
+def test_synthesize_verdict_cannot_label_checkable_claim_not_checkable(monkeypatch):
+    """Only claim normalization can decide checkability, never evidence synthesis."""
+    from app import llm
+
+    monkeypatch.setattr(
+        llm,
+        "_call_llm",
+        lambda *args, **kwargs: """{
+          "verdict": "not_checkable",
+          "confidence": 1.0,
+          "explanation": "The passages do not address the claim."
+        }""",
+    )
+    result = llm.synthesize_verdict(
+        "US inflation fell by 50% in 2024.",
+        [{
+            "tier": "primary",
+            "relation": "irrelevant",
+            "url": "https://www.cso.ie/en/statistics/prices/consumerpriceindex/",
+            "text": "Irish CPI data.",
+        }],
+    )
+
+    assert result["verdict"] == "unverified"
+    assert result["confidence"] == 0.0
 
 
 def test_synthesize_verdict_fallback_contradicted(monkeypatch):

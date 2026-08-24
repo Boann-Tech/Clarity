@@ -35,6 +35,7 @@ class Settings:
     google_api_key: str | None = os.getenv("CLARITY_GOOGLE_API_KEY")
     google_cse_id: str | None = os.getenv("CLARITY_GOOGLE_CSE_ID")
     serpapi_key: str | None = os.getenv("CLARITY_SERPAPI_KEY")
+    brave_search_api_key: str | None = os.getenv("CLARITY_BRAVE_SEARCH_API_KEY")
 
     # Evidence fetching
     max_sources_per_claim: int = int(os.getenv("CLARITY_MAX_SOURCES", "8"))

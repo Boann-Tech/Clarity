@@ -61,6 +61,15 @@ Unverified blogs, anonymous forum posts, AI-generated content, and social media 
 
 The evidence retrieval backend is a standalone FastAPI service at `backend/`.
 
+### Retrieval providers
+
+Clarity never treats a search snippet as evidence. Search providers only discover candidate URLs; every displayed citation is fetched, source-tiered, passage-classified, and validated.
+
+- **Built in, no key:** BLS CPI-U connector for U.S. inflation/CPI claims. It retrieves structured primary data directly from the BLS public API.
+- **Recommended for broad production coverage:** set `CLARITY_BRAVE_SEARCH_API_KEY`.
+- **Alternatives:** `CLARITY_SERPAPI_KEY`, or both `CLARITY_GOOGLE_API_KEY` and `CLARITY_GOOGLE_CSE_ID`.
+- **Fallback only:** DuckDuckGo Lite/Bing RSS. These may be rate-limited or low precision and must not be relied on for production verification.
+
 ```bash
 cd backend
 cp .env.example .env      # configure search backends

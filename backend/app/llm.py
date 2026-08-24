@@ -295,6 +295,15 @@ def synthesize_verdict(
         if not required.intersection(parsed.keys()):
             return _deterministic_fallback(claim, classified_passages, supported, contradicted, primary_count)
 
+        # Checkability is decided only by claim normalization, before retrieval.
+        # A synthesis model may say not_checkable when evidence is unrelated;
+        # that must mean unverified, not that a factual claim became an opinion.
+        allowed_verdicts = {"supported", "contradicted", "misleading", "unverified"}
+        if parsed.get("verdict") not in allowed_verdicts:
+            parsed["verdict"] = "unverified"
+            parsed["confidence"] = 0.0
+            parsed["explanation"] = "The retrieved evidence does not support an assessment of this factual claim."
+
         # Clamp confidence
         parsed["confidence"] = max(0.0, min(1.0, float(parsed.get("confidence", 0.5))))
         parsed.setdefault("limitations", [])
