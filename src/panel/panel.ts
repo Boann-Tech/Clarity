@@ -335,6 +335,18 @@ function renderClaims(claims: ClaimCheck[]) {
   }
 }
 
+function pageEligibilityMessage(url: string): string | null {
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "Clarity can only check public http(s) webpages. Open an article, video, or public post first."
+    }
+    return null
+  } catch {
+    return "Clarity could not identify this page. Open a public webpage and try again."
+  }
+}
+
 /* ───────── Main action ───────── */
 
 async function checkPage() {
@@ -355,7 +367,9 @@ async function checkPage() {
     const payload = pageResponse
 
     if (!payload?.text || payload.text.length < 50) {
-      emptyState.innerHTML = "<p>Not enough readable text found on this page.</p>"
+      const kind = String(payload?.kind ?? "unknown page")
+      const length = typeof payload?.text === "string" ? payload.text.length : 0
+      emptyState.innerHTML = `<p>Clarity captured only ${length} readable characters from this ${escapeHtml(kind)} page. Reload the extension and webpage, then try a public article or post.</p>`
       emptyState.style.display = "block"
       setStatus("no text")
       return

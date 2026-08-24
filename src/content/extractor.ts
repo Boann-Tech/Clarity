@@ -6,7 +6,16 @@
  * collects visible text and sends it as a PagePayload.
  */
 
-import type { PagePayload } from "../shared/protocol.js"
+type PageKind = "article" | "youtube" | "social" | "other"
+
+type PagePayload = {
+  title: string
+  text: string
+  url: string
+  kind: PageKind
+  publishedDate?: string
+  author?: string
+}
 
 /* ───────── Page type detection ───────── */
 
@@ -137,7 +146,7 @@ function extractYouTubeCaptions(): string {
 
 /* ───────── Public API ───────── */
 
-export function collectPagePayload(): PagePayload {
+function collectPagePayload(): PagePayload {
   const kind = detectPageKind()
   let text = ""
   const host = window.location.hostname
