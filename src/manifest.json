@@ -10,19 +10,13 @@
     "scripting"
   ],
   "host_permissions": [
-    "https://*.youtube.com/*"
+    "http://127.0.0.1:8080/*",
+    "http://localhost:8080/*"
   ],
   "background": {
     "service_worker": "background/worker.js",
     "type": "module"
   },
-  "content_scripts": [
-    {
-      "matches": ["https://*.youtube.com/*", "https://*/*"],
-      "js": ["content/extractor.js"],
-      "run_at": "document_idle"
-    }
-  ],
   "side_panel": {
     "default_path": "panel/panel.html"
   },

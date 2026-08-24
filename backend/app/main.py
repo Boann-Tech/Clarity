@@ -39,9 +39,14 @@ app = FastAPI(
 
 # ── CORS ──
 
+# Chrome extensions have per-install IDs, so a literal `chrome-extension://*`
+# cannot be used in allow_origins. Use a strict origin regex instead.
+CHROME_EXTENSION_ORIGIN_REGEX = r"^chrome-extension://[a-z]{32}$"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=[origin for origin in settings.cors_origins if origin != "chrome-extension://*"],
+    allow_origin_regex=CHROME_EXTENSION_ORIGIN_REGEX,
     allow_methods=["POST", "GET", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
