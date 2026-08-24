@@ -4,8 +4,6 @@ These tests verify the deterministic fallbacks (no Bifrost API key = graceful de
 With `CLARITY_BIFROST_API_KEY` and a deployed-model alias set, they also exercise the LLM path.
 """
 
-import os
-
 from app.llm import (
     _deterministic_fallback,
     classify_passages,
@@ -54,6 +52,36 @@ def test_classify_passages_fallback():
         assert p["llm_confidence"] == 0.5
 
 
+def test_classify_passages_accepts_bifrost_passages_response(monkeypatch):
+    """Bifrost models may wrap classifications in a `passages` array."""
+    from app import llm
+
+    monkeypatch.setattr(
+        llm,
+        "_call_llm",
+        lambda *args, **kwargs: '''{
+          "passages": [{
+            "index": 0,
+            "relation": "irrelevant",
+            "confidence": 1,
+            "reasoning": "Generic Reuters landing page; no inflation data."
+          }]
+        }''',
+    )
+    passages = [{
+        "index": 0,
+        "text": "Reuters delivers news from around the world.",
+        "url": "https://www.reuters.com/world/us/",
+        "tier": "fact_check",
+    }]
+
+    result = llm.classify_passages("US inflation fell by 50% in 2024.", passages)
+
+    assert result[0]["relation"] == "irrelevant"
+    assert result[0]["llm_confidence"] == 1.0
+    assert result[0]["reasoning"] == "Generic Reuters landing page; no inflation data."
+
+
 # ── Verdict Synthesis ──
 
 
@@ -64,8 +92,10 @@ def test_synthesize_verdict_empty():
     assert result["confidence"] == 0.0
 
 
-def test_synthesize_verdict_fallback_supported():
+def test_synthesize_verdict_fallback_supported(monkeypatch):
     """LLM unavailable → deterministic fallback with qualifying sources."""
+    from app import llm
+    monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: None)
     passages = [
         {"tier": "primary", "relation": "context", "url": "https://who.int/doc", "text": "WHO report data."},
         {"tier": "fact_check", "relation": "context", "url": "https://reuters.com/factcheck", "text": "Reuters confirms."},
@@ -75,8 +105,10 @@ def test_synthesize_verdict_fallback_supported():
     assert result["confidence"] > 0.5
 
 
-def test_synthesize_verdict_fallback_contradicted():
+def test_synthesize_verdict_fallback_contradicted(monkeypatch):
     """Contradicting evidence → contradicted verdict."""
+    from app import llm
+    monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: None)
     passages = [
         {"tier": "primary", "relation": "contradicts", "url": "https://bls.gov/data", "text": "BLS data contradicts claim."},
     ]
@@ -84,8 +116,10 @@ def test_synthesize_verdict_fallback_contradicted():
     assert result["verdict"] == "contradicted"
 
 
-def test_synthesize_verdict_fallback_mixed():
+def test_synthesize_verdict_fallback_mixed(monkeypatch):
     """Mixed evidence → misleading."""
+    from app import llm
+    monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: None)
     passages = [
         {"tier": "primary", "relation": "supports", "url": "https://example.com/a", "text": "Supports."},
         {"tier": "fact_check", "relation": "contradicts", "url": "https://example.com/b", "text": "Contradicts."},
@@ -94,8 +128,10 @@ def test_synthesize_verdict_fallback_mixed():
     assert result["verdict"] == "misleading"
 
 
-def test_synthesize_verdict_fallback_secondary_only():
+def test_synthesize_verdict_fallback_secondary_only(monkeypatch):
     """Only secondary news → unverified with low confidence."""
+    from app import llm
+    monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: None)
     passages = [
         {"tier": "secondary_news", "relation": "supports", "url": "https://bbc.com/news", "text": "BBC report."},
     ]

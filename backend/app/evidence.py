@@ -178,8 +178,21 @@ async def search_evidence(query: str, max_results: int = 10) -> list[dict]:
 
 
 async def fetch_page(url: str) -> str | None:
-    """Fetch a page and return its visible text content (first ~10K chars)."""
+    """Fetch a page and return its HTML for bounded local text extraction.
+
+    Curated sources receive one browser-UA retry for 401/403/429 responses;
+    unknown and excluded sites are not retried.
+    """
+    source_tier = classify_domain(url).tier
+    curated = source_tier in {"primary", "fact_check", "secondary_news"}
     headers = {"User-Agent": settings.user_agent}
+    browser_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
 
     try:
         async with httpx.AsyncClient(
@@ -188,6 +201,8 @@ async def fetch_page(url: str) -> str | None:
             max_redirects=5,
         ) as client:
             resp = await client.get(url, headers=headers)
+            if curated and resp.status_code in {401, 403, 429}:
+                resp = await client.get(url, headers=browser_headers)
             resp.raise_for_status()
 
             content_type = resp.headers.get("content-type", "")
@@ -195,8 +210,12 @@ async def fetch_page(url: str) -> str | None:
                 return None
 
             html = resp.text
-            if len(html) > 200_000:
-                return None  # too large
+            # Official release pages (notably BLS) often include large shared
+            # page templates. Permit a bounded larger payload only for curated
+            # sources, then still reduce the extracted text to a small passage.
+            max_html_chars = 2_000_000 if curated else 200_000
+            if len(html) > max_html_chars:
+                return None
 
             return html
     except Exception:
@@ -365,6 +384,13 @@ async def retrieve_evidence(
                     ranked[idx]["relation"] = classified_p.get("relation", "context")
                     ranked[idx]["llm_confidence"] = classified_p.get("llm_confidence", 0.5)
                     ranked[idx]["reasoning"] = classified_p.get("reasoning", "")
+            # Generic landing/category pages may come from a trusted domain
+            # but are not evidence. Never let an LLM-marked irrelevant page
+            # enter verdict synthesis or the public citation list.
+            ranked = [
+                src for src in ranked
+                if src.get("relation", "context") != "irrelevant"
+            ]
         except Exception:
             for src in ranked:
                 src.setdefault("relation", "context")

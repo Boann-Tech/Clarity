@@ -192,13 +192,24 @@ def classify_passages(
 
     try:
         parsed = json.loads(content)
-        classifications = parsed if isinstance(parsed, list) else parsed.get("classifications", [])
+        if isinstance(parsed, list):
+            classifications = parsed
+        elif isinstance(parsed, dict):
+            # Bifrost/deployed models commonly choose either response key.
+            classifications = parsed.get("classifications") or parsed.get("passages") or []
+        else:
+            classifications = []
 
         # Build lookup by index
         classification_map: dict[int, dict] = {}
+        valid_relations = {"supports", "contradicts", "context", "irrelevant"}
         for c in classifications:
+            if not isinstance(c, dict):
+                continue
             idx = c.get("index")
             if idx is not None:
+                relation = c.get("relation", "context")
+                c["relation"] = relation if relation in valid_relations else "context"
                 classification_map[int(idx)] = c
 
         # Apply to passages
