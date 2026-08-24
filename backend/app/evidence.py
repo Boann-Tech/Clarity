@@ -347,6 +347,11 @@ async def retrieve_evidence(
             "snippet": src["snippet"],
             "relevance_score": round(src.get("relevance_score", 0), 2),
             "retrieval_status": src.get("retrieval_status", "ok"),
+            # LLM annotations stay internal to the backend verdict stage;
+            # extra keys are ignored by the public CitationSource model.
+            "relation": src.get("relation", "context"),
+            "llm_confidence": src.get("llm_confidence", 0.5),
+            "reasoning": src.get("reasoning", ""),
         })
 
     return citations

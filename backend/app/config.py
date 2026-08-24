@@ -27,12 +27,13 @@ class Settings:
         "Clarity/1.0 (+https://github.com/boanntech/clarity) evidence-checker"
     )
 
-    # LLM — DeepSeek Pro (OpenAI-compatible)
-    deepseek_api_key: str | None = os.getenv("CLARITY_DEEPSEEK_API_KEY")
-    deepseek_model: str = os.getenv("CLARITY_DEEPSEEK_MODEL", "deepseek-chat")
-    deepseek_base_url: str = os.getenv(
-        "CLARITY_DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"
+    # LLM gateway — Bifrost is the single AI egress point.
+    # The configured model is the exact deployment/model alias Bifrost exposes.
+    bifrost_api_key: str | None = os.getenv("CLARITY_BIFROST_API_KEY")
+    bifrost_base_url: str = os.getenv(
+        "CLARITY_BIFROST_BASE_URL", "http://localhost:8081/v1"
     )
+    bifrost_model: str = os.getenv("CLARITY_BIFROST_MODEL", "deepseek-pro")
     llm_enabled: bool = os.getenv("CLARITY_LLM_ENABLED", "true").lower() == "true"
 
     # Rate limiting

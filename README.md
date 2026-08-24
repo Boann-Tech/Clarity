@@ -79,7 +79,24 @@ docker run -p 8080:8080 clarity-backend
 1. **DuckDuckGo** (free, no key, rate-limited, enabled by default)
 2. **Google Custom Search** (recommended — 100 free queries/day)
 
-**Evidence pipeline:** Search → Fetch pages → Extract relevant passages → Classify source tier → Deduplicate and rank → Calculate verdict
+**Evidence pipeline:** Search → Fetch pages → Extract relevant passages → Classify source tier → Deduplicate and rank → Bifrost model classifies passages and synthesizes a constrained verdict
+
+### AI gateway: Bifrost
+
+Clarity sends **all** LLM traffic through Bifrost’s OpenAI-compatible API. Bifrost owns the deployed model alias, provider credentials, routing, load balancing, and failover. Clarity never calls DeepSeek (or any other model provider) directly.
+
+```bash
+cd backend
+cp .env.example .env
+
+# Point to Bifrost's OpenAI-compatible /v1 endpoint.
+# Use the exact model/deployment alias configured in Bifrost.
+CLARITY_BIFROST_API_KEY=your-bifrost-key
+CLARITY_BIFROST_BASE_URL=http://your-bifrost-host:8081/v1
+CLARITY_BIFROST_MODEL=deepseek-pro
+```
+
+The LLM may normalize claims, classify **retrieved** passages as support/contradiction/context, and synthesize a verdict from those passages. It cannot create citations: the evidence-before-verdict guard remains deterministic. If Bifrost is unavailable or rejects a feature such as JSON mode, Clarity retries with standard chat completion and ultimately falls back to the deterministic evaluator.
 
 ## Architecture
 

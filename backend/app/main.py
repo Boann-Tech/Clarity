@@ -33,7 +33,7 @@ logger = logging.getLogger("clarity.api")
 app = FastAPI(
     title="Clarity API",
     version="3.0.0",
-    description="Evidence-first claim verification. Uses DeepSeek Pro for claim normalization, passage classification, and verdict synthesis — always over retrieved sources.",
+    description="Evidence-first claim verification. Uses Bifrost-deployed models for claim normalization, passage classification, and verdict synthesis — always over retrieved sources.",
     docs_url="/docs",
 )
 
@@ -52,8 +52,9 @@ async def health():
     return {
         "status": "ok",
         "version": "3.0.0",
-        "llm_enabled": settings.llm_enabled and bool(settings.deepseek_api_key),
-        "model": settings.deepseek_model,
+        "llm_enabled": settings.llm_enabled and bool(settings.bifrost_api_key),
+        "model": settings.bifrost_model,
+        "gateway": "bifrost",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -75,7 +76,7 @@ async def check_claim(req: CheckRequest) -> CheckResponse:
 
     # Step 1: Normalise
     normalized_claim = " ".join(req.claim.split())
-    llm_available = settings.llm_enabled and bool(settings.deepseek_api_key)
+    llm_available = settings.llm_enabled and bool(settings.bifrost_api_key)
 
     # Step 1b: Optional LLM claim normalisation for better search queries
     search_queries = [normalized_claim]

@@ -1,4 +1,7 @@
-"""DeepSeek Pro integration for Clarity's evidence pipeline.
+"""Bifrost gateway integration for Clarity's evidence pipeline.
+
+Bifrost is Clarity's single AI egress point. It exposes deployed models
+(including DeepSeek Pro) through an OpenAI-compatible endpoint.
 
 The LLM is used as a *judge of evidence*, not a source of it.
 It never generates citations. It only evaluates passages we already
@@ -23,24 +26,24 @@ from app.config import settings
 
 logger = logging.getLogger("clarity.llm")
 
-# ── DeepSeek Pro client (OpenAI-compatible) ──
+# ── Bifrost client (OpenAI-compatible) ──
 
 
 def _build_client():
-    """Create an OpenAI-compatible client pointing at DeepSeek."""
+    """Create an OpenAI-compatible client pointing at Bifrost."""
     try:
         from openai import OpenAI
     except ImportError:
         logger.warning("openai package not installed — LLM features disabled")
         return None
 
-    if not settings.deepseek_api_key:
-        logger.info("No DeepSeek API key configured — LLM features disabled")
+    if not settings.bifrost_api_key:
+        logger.info("No Bifrost API key configured — LLM features disabled")
         return None
 
     return OpenAI(
-        api_key=settings.deepseek_api_key,
-        base_url=settings.deepseek_base_url,
+        api_key=settings.bifrost_api_key,
+        base_url=settings.bifrost_base_url,
     )
 
 
@@ -51,7 +54,7 @@ def _call_llm(
     max_tokens: int = 1024,
     json_mode: bool = True,
 ) -> str | None:
-    """Call DeepSeek Pro and return the response text.
+    """Call the configured Bifrost-deployed model and return response text.
 
     Returns None on any failure (caller handles fallback).
     """
@@ -59,24 +62,34 @@ def _call_llm(
     if client is None:
         return None
 
-    try:
-        kwargs: dict[str, Any] = {
-            "model": settings.deepseek_model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        if json_mode:
-            kwargs["response_format"] = {"type": "json_object"}
+    kwargs: dict[str, Any] = {
+        "model": settings.bifrost_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
 
+    try:
         resp = client.chat.completions.create(**kwargs)
-        content = resp.choices[0].message.content
-        return content
-    except Exception as e:
-        logger.warning("LLM call failed: %s", e)
+        return resp.choices[0].message.content
+    except Exception as first_error:
+        # Some Bifrost-backed deployments do not expose response_format.
+        # The prompts still require JSON, so retry once without that optional
+        # OpenAI feature before falling back to deterministic evaluation.
+        if json_mode:
+            try:
+                kwargs.pop("response_format", None)
+                resp = client.chat.completions.create(**kwargs)
+                return resp.choices[0].message.content
+            except Exception as retry_error:
+                logger.warning("Bifrost LLM call failed after JSON-mode retry: %s", retry_error)
+                return None
+        logger.warning("Bifrost LLM call failed: %s", first_error)
         return None
 
 

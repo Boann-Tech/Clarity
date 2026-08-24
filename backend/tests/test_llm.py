@@ -1,7 +1,7 @@
 """Tests for LLM module — claim normalisation, passage classification, verdict synthesis.
 
-These tests verify the deterministic fallbacks (no API key = graceful degradation).
-With CLARITY_DEEPSEEK_API_KEY set, they also verify the LLM path.
+These tests verify the deterministic fallbacks (no Bifrost API key = graceful degradation).
+With `CLARITY_BIFROST_API_KEY` and a deployed-model alias set, they also exercise the LLM path.
 """
 
 import os
