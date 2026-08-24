@@ -347,7 +347,12 @@ async function checkPage() {
     if (!tab?.id) throw new Error("No active tab")
 
     setProgress(25)
-    const payload = await chrome.tabs.sendMessage(tab.id, { type: "GET_PAGE_TEXT" })
+    const pageResponse = await chrome.runtime.sendMessage({
+      type: "GET_PAGE_TEXT_FOR_TAB",
+      data: { tabId: tab.id },
+    })
+    if (pageResponse?.error) throw new Error(pageResponse.error)
+    const payload = pageResponse
 
     if (!payload?.text || payload.text.length < 50) {
       emptyState.innerHTML = "<p>Not enough readable text found on this page.</p>"

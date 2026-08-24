@@ -20,6 +20,13 @@ import { extractCandidates, selectCheckableClaims, assessmentFromResponse } from
 const DEFAULT_BACKEND_URL = "http://localhost:8080"
 const STORAGE_KEY_BACKEND_URL = "clarity_backend_url"
 
+type BackendCheckResponse = {
+  claim?: string
+  assessment?: { verdict?: string; confidence?: number; explanation?: string }
+  citations?: Array<Record<string, unknown>>
+  checked_at?: string
+}
+
 async function getBackendUrl(): Promise<string> {
   try {
     const result = await chrome.storage.local.get(STORAGE_KEY_BACKEND_URL)
@@ -64,11 +71,34 @@ chrome.runtime.onMessage.addListener((
       .catch((err) => sendResponse({ error: err.message }))
     return true
   }
+  if (message.type === "GET_PAGE_TEXT_FOR_TAB" && typeof message.data?.tabId === "number") {
+    getPagePayloadForTab(message.data.tabId)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ error: err instanceof Error ? err.message : String(err) }))
+    return true
+  }
   if (message.type === "GET_BACKEND_URL") {
     getBackendUrl().then(sendResponse)
     return true
   }
 })
+
+/* ───────── Page extraction bridge ───────── */
+
+async function getPagePayloadForTab(tabId: number): Promise<PagePayload> {
+  try {
+    return await chrome.tabs.sendMessage(tabId, { type: "GET_PAGE_TEXT" }) as PagePayload
+  } catch {
+    // Content scripts are not retroactively injected into a page opened before
+    // install/reload. Inject only after the user's explicit Check action;
+    // activeTab grants temporary access without broad host permissions.
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content/extractor.js"],
+    })
+    return await chrome.tabs.sendMessage(tabId, { type: "GET_PAGE_TEXT" }) as PagePayload
+  }
+}
 
 /* ───────── Verification pipeline ───────── */
 
@@ -95,18 +125,24 @@ async function verifySingleClaim(claimText: string): Promise<ClaimCheck> {
   }
 
   // 2. Run evidence search via backend
-  const citations = await searchEvidence(claimText)
+  const backendResult = await searchEvidence(claimText)
 
-  // 3. Form assessment
+  // 3. Preserve the backend's evidence-guarded assessment verbatim. The
+  // extension may add UI safeguards, but must never rewrite a contradiction
+  // into "supported" merely because citations exist.
   let raw: { claim: string; verdict: string; confidence: number; explanation: string; citations: Citation[]; checkedAt: string }
 
-  if (!citations) {
-    // Backend unreachable
+  if (!backendResult) {
     raw = { claim: claimText, verdict: "unverified", confidence: 0, explanation: "Offline — the Clarity backend could not be reached. Check your connection or backend URL in Settings.", citations: [], checkedAt: new Date().toISOString() }
-  } else if (citations.length === 0) {
-    raw = { claim: claimText, verdict: "unverified", confidence: 0, explanation: "No validated citations could be retrieved for this claim.", citations: [], checkedAt: new Date().toISOString() }
   } else {
-    raw = { claim: claimText, verdict: "supported", confidence: 0.7, explanation: `Found ${citations.length} relevant source(s) from curated evidence sources.`, citations, checkedAt: new Date().toISOString() }
+    raw = {
+      claim: String(backendResult.claim ?? claimText),
+      verdict: String(backendResult.assessment?.verdict ?? "unverified"),
+      confidence: Number(backendResult.assessment?.confidence ?? 0),
+      explanation: String(backendResult.assessment?.explanation ?? "No validated citations could be retrieved for this claim."),
+      citations: mapBackendCitations(backendResult.citations ?? []),
+      checkedAt: String(backendResult.checked_at ?? new Date().toISOString()),
+    }
   }
 
   const result = assessmentFromResponse(raw)
@@ -119,7 +155,7 @@ async function verifySingleClaim(claimText: string): Promise<ClaimCheck> {
 
 /* ───────── Evidence retrieval via backend API ───────── */
 
-async function searchEvidence(claimText: string): Promise<Citation[] | null> {
+async function searchEvidence(claimText: string): Promise<BackendCheckResponse | null> {
   const backendUrl = await getBackendUrl()
 
   try {
@@ -130,28 +166,24 @@ async function searchEvidence(claimText: string): Promise<Citation[] | null> {
       signal: AbortSignal.timeout(15000), // 15s timeout
     })
 
-    if (!response.ok) return []
-
-    const data = await response.json()
-
-    // Map backend response to protocol Citation type
-    const backendCitations = data.citations ?? []
-    const citations: Citation[] = backendCitations
-      .filter((c: Record<string, unknown>) => c.url && typeof c.url === "string" && c.url.startsWith("http"))
-      .map((c: Record<string, unknown>) => ({
-        title: String(c.title ?? "Untitled"),
-        publisher: String(c.publisher ?? c.tier ?? "unknown"),
-        url: String(c.url),
-        publishedDate: String(c.published_date ?? c.publishedDate ?? ""),
-        snippet: String(c.snippet ?? "").slice(0, 800),
-        sourceTier: mapTier(String(c.tier ?? "secondary_news")),
-      }))
-
-    return citations
+    if (!response.ok) return null
+    return await response.json() as BackendCheckResponse
   } catch {
-    // Backend unreachable
     return null
   }
+}
+
+function mapBackendCitations(backendCitations: Array<Record<string, unknown>>): Citation[] {
+  return backendCitations
+    .filter((c) => c.url && typeof c.url === "string" && c.url.startsWith("http"))
+    .map((c) => ({
+      title: String(c.title ?? "Untitled"),
+      publisher: String(c.publisher ?? c.tier ?? "unknown"),
+      url: String(c.url),
+      publishedDate: String(c.published_date ?? c.publishedDate ?? ""),
+      snippet: String(c.snippet ?? "").slice(0, 800),
+      sourceTier: mapTier(String(c.tier ?? "secondary_news")),
+    }))
 }
 
 function mapTier(tier: string): Citation["sourceTier"] {
