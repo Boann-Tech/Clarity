@@ -4,6 +4,23 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+
+def load_backend_env(env_file: Path | None = None) -> None:
+    """Load the backend-local .env before reading Settings defaults.
+
+    Uvicorn does not load dotenv files automatically. Resolving relative to
+    this module keeps configuration stable whether it is started from backend/
+    or from a process manager with a different working directory.
+    """
+    resolved = env_file or Path(__file__).resolve().parents[1] / ".env"
+    load_dotenv(resolved, override=False)
+
+
+load_backend_env()
 
 
 @dataclass
