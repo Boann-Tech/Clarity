@@ -118,6 +118,7 @@ The LLM may normalize claims, classify **retrieved** passages as support/contrad
 - **Rate limits:** `CLARITY_RATE_LIMIT` requests per minute (default 10) and `CLARITY_RATE_LIMIT_HOUR` requests per hour (default 50), per client IP; exceeding them returns 429.
 - **Response cache:** `CLARITY_CACHE_TTL` seconds (default 1800) controls how long checked-claim responses are cached.
 - **No baked secrets:** `backend/.dockerignore` excludes `.env`; pass it at runtime with `docker run --env-file backend/.env`.
+- **Network egress guard with a known residual:** fetches are allowlisted to curated registry domains and every redirect hop is re-validated against the same rules. DNS rebinding between that validation and httpx's own resolution is a known TOCTOU residual — run the backend on a trusted network and add transport-level IP pinning before exposing it to untrusted networks.
 
 ## Architecture
 
