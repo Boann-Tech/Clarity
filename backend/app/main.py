@@ -225,8 +225,10 @@ async def check_claim(req: CheckRequest) -> CheckResponse:
     # Step 6: Evidence-first invariant — enforce at serialisation boundary
     if assessment.verdict in (Verdict.supported, Verdict.contradicted, Verdict.misleading):
         qualifying = qualifying_citations(citations)
-        if assessment.verdict == Verdict.misleading and len({url_host(c["url"]) for c in qualifying}) < 2:
-            qualifying = []
+        if assessment.verdict == Verdict.misleading:
+            conflicting = [c for c in qualifying if c.get("relation") in ("supports", "contradicts")]
+            if len({url_host(c.get("url", "")) for c in conflicting}) < 2:
+                qualifying = []
         if not qualifying:
             assessment = Assessment(
                 verdict=Verdict.unverified,

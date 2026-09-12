@@ -60,7 +60,7 @@ def calculate_verdict(
 
     supports = [c for c in qualifying if c.get("relation") == "supports"]
     contradicts = [c for c in qualifying if c.get("relation") == "contradicts"]
-    hosts = {url_host(c.get("url", "")) for c in qualifying}
+    hosts = {url_host(c.get("url", "")) for c in supports + contradicts}
     primary_count = sum(1 for c in qualifying if c.get("tier") == "primary")
 
     base_confidence = min(0.5 + (len(qualifying) * 0.08), 0.92)

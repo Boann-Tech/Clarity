@@ -341,8 +341,9 @@ def synthesize_verdict(
             parsed["confidence"] = 0.0
             parsed["explanation"] = "The LLM assessment could not be validated against qualifying sources."
         if parsed["verdict"] == "misleading":
-            hosts = {url_host(p.get("url", "")) for p in qualifying}
-            if len(qualifying) < 2 or len(hosts) < 2:
+            conflicting = [p for p in qualifying if p.get("relation") in ("supports", "contradicts")]
+            hosts = {url_host(p.get("url", "")) for p in conflicting}
+            if len(hosts) < 2:
                 parsed["verdict"] = "unverified"
                 parsed["confidence"] = 0.0
                 parsed["explanation"] = (

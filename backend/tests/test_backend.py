@@ -138,6 +138,21 @@ def test_verdict_misleading_requires_two_independent_hosts():
     assert calculate_verdict(independent).verdict == Verdict.misleading
 
 
+def test_verdict_misleading_ignores_context_citation_hosts():
+    same_publisher_conflict = [
+        {"url": "https://reuters.com/a", "tier": "fact_check", "snippet": "A", "retrieval_status": "ok", "relation": "supports"},
+        {"url": "https://reuters.com/b", "tier": "fact_check", "snippet": "B", "retrieval_status": "ok", "relation": "contradicts"},
+        {"url": "https://who.int/c", "tier": "primary", "snippet": "C", "retrieval_status": "ok", "relation": "context"},
+    ]
+    independent_conflict = [
+        {"url": "https://reuters.com/a", "tier": "fact_check", "snippet": "A", "retrieval_status": "ok", "relation": "supports"},
+        {"url": "https://apnews.com/b", "tier": "fact_check", "snippet": "B", "retrieval_status": "ok", "relation": "contradicts"},
+        {"url": "https://who.int/c", "tier": "primary", "snippet": "C", "retrieval_status": "ok", "relation": "context"},
+    ]
+    assert calculate_verdict(same_publisher_conflict).verdict == Verdict.unverified
+    assert calculate_verdict(independent_conflict).verdict == Verdict.misleading
+
+
 def test_verdict_ignores_unfetched_or_empty_citations():
     citations = [
         {"url": "https://who.int/doc", "tier": "primary", "snippet": "", "retrieval_status": "fetch_error", "relation": "supports"},
