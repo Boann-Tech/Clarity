@@ -9,7 +9,7 @@
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version" />
-    <img src="https://img.shields.io/badge/tests-118%20passing-green.svg" alt="Tests" />
+    <img src="https://img.shields.io/badge/tests-127%20passing-green.svg" alt="Tests" />
     <img src="https://img.shields.io/badge/Chrome-MV3-yellow.svg" alt="MV3" />
     <img src="https://img.shields.io/badge/license-MIT-lightgrey.svg" alt="License" />
   </p>
@@ -192,7 +192,7 @@ npm run build     # → dist/
 # Backend tests:
 cd backend
 pip install -r requirements-dev.txt
-python3 -m pytest -q    # 102 tests — backend
+python3 -m pytest -q    # 111 tests — backend
 ```
 
 Then load in Chrome:
