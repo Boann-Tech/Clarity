@@ -6,9 +6,16 @@
  * collects visible text and sends it as a PagePayload.
  */
 
-import { isHostMatch } from "../shared/protocol.js"
-
 const MAX_PAGE_TEXT = 20000
+
+// Kept local (not imported) because this file is injected as a classic content
+// script; any import/export makes tsc emit an ES module, which executeScript
+// cannot inject. Keep in sync with protocol.isHostMatch.
+function isHostMatch(host: string, domain: string): boolean {
+  const h = host.toLowerCase()
+  const d = domain.toLowerCase()
+  return h === d || h.endsWith(`.${d}`)
+}
 
 type PageKind = "article" | "youtube" | "social" | "other"
 

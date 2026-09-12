@@ -21,4 +21,10 @@ describe("extension manifest", () => {
     expect(manifest.action.default_icon).toBe("icons/icon128.png")
     expect(manifest.minimum_chrome_version).toBe("116")
   })
+
+  it("keeps the injected extractor import-free so tsc emits a classic script", () => {
+    const source = readFileSync(new URL("./content/extractor.ts", import.meta.url), "utf8")
+    expect(source).not.toMatch(/^\s*import\s/m)
+    expect(source).not.toMatch(/^\s*export\s/m)
+  })
 })
