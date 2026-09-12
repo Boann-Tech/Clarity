@@ -471,7 +471,7 @@ function InstallCta() {
   const phases = [
     { name: 'Phase 1', status: '✅', desc: 'Extension — UI, extraction, verdict protocol' },
     { name: 'Phase 2', status: '✅', desc: 'Backend — FastAPI, evidence retrieval, source tiering' },
-    { name: 'Phase 3', status: '✅', desc: 'Cross-platform — Twitter/X, Reddit, Facebook + history & settings' },
+    { name: 'Phase 3', status: '🏗️', desc: 'Cross-platform — in progress' },
     { name: 'Phase 4', status: '🏗️', desc: 'Audio transcription, multi-language, breaking-news monitoring' },
   ];
 

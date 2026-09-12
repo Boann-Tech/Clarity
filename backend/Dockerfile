@@ -2,10 +2,16 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
-COPY . .
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+    && addgroup --system clarity \
+    && adduser --system --ingroup clarity clarity
+
+COPY --chown=clarity:clarity app ./app
+
+USER clarity
 
 EXPOSE 8080
 

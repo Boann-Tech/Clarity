@@ -9,7 +9,7 @@
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version" />
-    <img src="https://img.shields.io/badge/tests-8%20passing-green.svg" alt="Tests" />
+    <img src="https://img.shields.io/badge/tests-88%20passing-green.svg" alt="Tests" />
     <img src="https://img.shields.io/badge/Chrome-MV3-yellow.svg" alt="MV3" />
     <img src="https://img.shields.io/badge/license-MIT-lightgrey.svg" alt="License" />
   </p>
@@ -61,6 +61,8 @@ Unverified blogs, anonymous forum posts, AI-generated content, and social media 
 
 The evidence retrieval backend is a standalone FastAPI service at `backend/`.
 
+**Fail closed:** a verdict is only issued when evidence is fetched and classified. Without a `CLARITY_BIFROST_API_KEY`, the deterministic evaluator returns **Unverified** — Clarity never fabricates support.
+
 ### Retrieval providers
 
 Clarity never treats a search snippet as evidence. Search providers only discover candidate URLs; every displayed citation is fetched, source-tiered, passage-classified, and validated.
@@ -74,19 +76,22 @@ Clarity never treats a search snippet as evidence. Search providers only discove
 cd backend
 cp .env.example .env      # configure search backends
 uvicorn app.main:app --reload --port 8080
-
-# Or with Docker:
-docker build -t clarity-backend .
-docker run -p 8080:8080 clarity-backend
 ```
+
+Or with Docker (from the repo root):
+
+```bash
+docker build -t clarity-backend ./backend
+docker run --env-file backend/.env -p 8080:8080 clarity-backend
+```
+
+`backend/.dockerignore` excludes `.env`, so credentials are passed at runtime with `--env-file` and are never baked into the image.
 
 **Endpoints:**
 - `POST /api/check` — Check a claim. Request: `{"claim": "..."}` → Response with citations and assessment
 - `GET /api/health` — Health check
 
-**Search backends** (configure one):
-1. **DuckDuckGo** (free, no key, rate-limited, enabled by default)
-2. **Google Custom Search** (recommended — 100 free queries/day)
+**Search backends** — see [Retrieval providers](#retrieval-providers) above. `CLARITY_DDG_ENABLED` toggles the DuckDuckGo fallback (enabled by default).
 
 **Evidence pipeline:** Search → Fetch pages → Extract relevant passages → Classify source tier → Deduplicate and rank → Bifrost model classifies passages and synthesizes a constrained verdict
 
@@ -105,7 +110,14 @@ CLARITY_BIFROST_BASE_URL=http://your-bifrost-host:8081/v1
 CLARITY_BIFROST_MODEL=deepseek-pro
 ```
 
-The LLM may normalize claims, classify **retrieved** passages as support/contradiction/context, and synthesize a verdict from those passages. It cannot create citations: the evidence-before-verdict guard remains deterministic. If Bifrost is unavailable or rejects a feature such as JSON mode, Clarity retries with standard chat completion and ultimately falls back to the deterministic evaluator.
+The LLM may normalize claims, classify **retrieved** passages as support/contradiction/context, and synthesize a verdict from those passages. It cannot create citations: the evidence-before-verdict guard remains deterministic. If Bifrost is unavailable or rejects a feature such as JSON mode, Clarity retries with standard chat completion and ultimately falls back to the deterministic evaluator. Without a Bifrost key the evaluator returns **Unverified** — it never fabricates support.
+
+### API security
+
+- **Optional bearer token:** set `CLARITY_API_TOKEN` on the backend, then paste the same value into the extension's Settings **Backend token** field. When configured, `/api/check` requires `Authorization: Bearer <token>` and returns 401 otherwise.
+- **Rate limits:** `CLARITY_RATE_LIMIT` requests per minute (default 10) and `CLARITY_RATE_LIMIT_HOUR` requests per hour (default 50), per client IP; exceeding them returns 429.
+- **Response cache:** `CLARITY_CACHE_TTL` seconds (default 1800) controls how long checked-claim responses are cached.
+- **No baked secrets:** `backend/.dockerignore` excludes `.env`; pass it at runtime with `docker run --env-file backend/.env`.
 
 ## Architecture
 
@@ -120,7 +132,7 @@ src/
 Key design decisions:
 
 - **Privacy by design:** Text is only extracted when you click "Check claims" — never automatically. No data leaves without your action. No cookies, full DOM, or browsing history is ever collected.
-- **No secrets in the extension:** No API keys, no tokens, no service credentials. The evidence search backend (Phase 2) owns all secrets.
+- **No bundled secrets:** The extension ships with no API keys or service credentials. The backend URL and optional API token are entered in Settings and stored locally.
 - **Evidence before verdict:** The protocol contract enforces that a verdict requires fetched-and-validated source citations. The LLM can't fabricate a conclusion.
 - **No remote code:** All logic is bundled. No eval, no remote scripts, no CSP violations.
 
@@ -132,8 +144,13 @@ Key design decisions:
 git clone https://github.com/boanntech/clarity
 cd clarity
 npm install
-npm test          # 8 tests — runs in ~120ms
+npm test          # 16 tests — runs in ~175ms
 npm run build     # → dist/
+
+# Backend tests:
+cd backend
+pip install -r requirements-dev.txt
+python3 -m pytest -q    # 72 tests
 ```
 
 Then load in Chrome:
@@ -144,7 +161,7 @@ Then load in Chrome:
 
 ### Load the side panel
 
-Click the Clarity icon in the toolbar, or use the keyboard shortcut (default configurable at `chrome://extensions/shortcuts`).
+Click the Clarity icon in the toolbar to open the side panel.
 
 ## Status
 
