@@ -117,20 +117,36 @@ Clarity sends LLM traffic to any provider that exposes the OpenAI Chat Completio
 | Anything else | `custom` | set `CLARITY_LLM_BASE_URL` | required |
 
 ```bash
+# Example: OpenAI
+CLARITY_LLM_PROVIDER=openai
+CLARITY_LLM_API_KEY=sk-...
+CLARITY_LLM_MODEL=gpt-4o
+
 # Example: DeepSeek
 CLARITY_LLM_PROVIDER=deepseek
 CLARITY_LLM_API_KEY=sk-...
 CLARITY_LLM_MODEL=deepseek-chat
 
-# Example: local Ollama
-CLARITY_LLM_PROVIDER=ollama
-CLARITY_LLM_MODEL=llama3.1
+# Example: Groq
+CLARITY_LLM_PROVIDER=groq
+CLARITY_LLM_API_KEY=gsk_...
+CLARITY_LLM_MODEL=llama-3.3-70b-versatile
 
 # Example: OpenRouter with attribution headers
 CLARITY_LLM_PROVIDER=openrouter
 CLARITY_LLM_API_KEY=sk-or-...
 CLARITY_LLM_MODEL=deepseek/deepseek-chat
 CLARITY_LLM_EXTRA_HEADERS={"HTTP-Referer":"https://github.com/boanntech/clarity"}
+
+# Example: local Ollama
+CLARITY_LLM_PROVIDER=ollama
+CLARITY_LLM_MODEL=llama3.1
+
+# Example: Bifrost gateway (preset base URL http://localhost:8081/v1;
+# set CLARITY_LLM_BASE_URL to point at a remote host)
+CLARITY_LLM_PROVIDER=bifrost
+CLARITY_LLM_API_KEY=your-bifrost-key
+CLARITY_LLM_MODEL=deepseek-pro
 ```
 
 Models that reject `max_tokens` (some newer OpenAI models) can use `CLARITY_LLM_MAX_TOKENS_PARAM=max_completion_tokens`. If a provider rejects JSON mode, Clarity retries with a standard chat completion and ultimately falls back to the deterministic evaluator. With no model configured, evaluations are **Unverified** — Clarity never fabricates support.
