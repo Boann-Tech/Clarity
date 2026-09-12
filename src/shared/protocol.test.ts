@@ -94,4 +94,18 @@ describe("assessmentFromResponse", () => {
 
     expect(assessment.verdict).toBe("unverified")
   })
+
+  it("keeps a backend unverified verdict even when citations exist", () => {
+    const assessment = assessmentFromResponse({
+      claim: "Inflation was 2.3% in May 2026.",
+      verdict: "unverified",
+      confidence: 0.9,
+      explanation: "Evidence was inconclusive.",
+      citations: [validCitation],
+      checkedAt: "2026-06-20T10:00:00Z",
+    })
+
+    expect(assessment.verdict).toBe("unverified")
+    expect(assessment.confidence).toBe(0)
+  })
 })

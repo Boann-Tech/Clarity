@@ -3,7 +3,15 @@
  * evidence-first card UI with tabs for Check, History, and Settings.
  */
 
-import type { ClaimCheck } from "../shared/protocol.js"
+import type { AppSettings, ClaimCheck } from "../shared/protocol.js"
+import {
+  DEFAULT_SETTINGS,
+  assessPageUrl,
+  mergeHistory,
+  normalizeBackendUrl,
+  resolveSettings,
+  testBackendConnection,
+} from "../shared/protocol.js"
 
 /* ───────── DOM refs ───────── */
 
@@ -24,10 +32,13 @@ const panelSettings = document.getElementById("panelSettings") as HTMLDivElement
 
 // Settings refs
 const settingsBackendUrl = document.getElementById("settingsBackendUrl") as HTMLInputElement
+const settingsBackendToken = document.getElementById("settingsBackendToken") as HTMLInputElement
 const settingsMaxClaims = document.getElementById("settingsMaxClaims") as HTMLInputElement
 const settingsStatus = document.getElementById("settingsStatus") as HTMLSpanElement
 const saveSettingsBtn = document.getElementById("saveSettingsBtn") as HTMLButtonElement
 const resetSettingsBtn = document.getElementById("resetSettingsBtn") as HTMLButtonElement
+const testConnectionBtn = document.getElementById("testConnectionBtn") as HTMLButtonElement
+const testConnectionStatus = document.getElementById("testConnectionStatus") as HTMLSpanElement
 
 // History refs
 const historyList = document.getElementById("historyList") as HTMLDivElement
@@ -38,7 +49,6 @@ const clearHistoryBtn = document.getElementById("clearHistoryBtn") as HTMLButton
 const HISTORY_KEY = "clarity_claim_history"
 const SETTINGS_KEY = "clarity_settings"
 const MAX_HISTORY = 50
-const DEFAULT_SETTINGS = { backendUrl: "http://localhost:8080", maxClaims: 10 }
 
 interface HistoryEntry {
   claim: string
@@ -47,13 +57,6 @@ interface HistoryEntry {
   explanation: string
   checkedAt: string
   url: string
-}
-
-interface AppSettings {
-  backendUrl: string
-  maxClaims: number
-  filterDomain: string
-  highConfidenceOnly: boolean
 }
 
 /* ───────── Tab switching ───────── */
@@ -102,31 +105,29 @@ function setProgress(pct: number) {
 /* ───────── Settings ───────── */
 
 async function getSettings(): Promise<AppSettings> {
-  const defaults: AppSettings = { backendUrl: "http://localhost:8080", maxClaims: 10, filterDomain: "all", highConfidenceOnly: false }
   try {
     const result = await chrome.storage.local.get(SETTINGS_KEY)
-    const stored = result[SETTINGS_KEY] as Partial<AppSettings> | undefined
-    if (!stored) return defaults
-    return { ...defaults, ...stored }
+    return resolveSettings(result[SETTINGS_KEY])
   } catch {
-    return defaults
+    return DEFAULT_SETTINGS
   }
 }
 
 async function loadSettings() {
   const s = await getSettings()
   settingsBackendUrl.value = s.backendUrl
+  settingsBackendToken.value = s.backendToken
   settingsMaxClaims.value = String(s.maxClaims)
 }
 
 async function saveSettings() {
   const settings: AppSettings = {
-    backendUrl: settingsBackendUrl.value.trim() || DEFAULT_SETTINGS.backendUrl,
-    maxClaims: Math.min(Math.max(parseInt(settingsMaxClaims.value) || 10, 1), 20),
-    filterDomain: "all",
-    highConfidenceOnly: false,
+    backendUrl: normalizeBackendUrl(settingsBackendUrl.value),
+    backendToken: settingsBackendToken.value.trim(),
+    maxClaims: Math.min(Math.max(parseInt(settingsMaxClaims.value) || DEFAULT_SETTINGS.maxClaims, 1), 20),
   }
   await chrome.storage.local.set({ [SETTINGS_KEY]: settings })
+  settingsBackendUrl.value = settings.backendUrl
   settingsStatus.textContent = "Saved"
   setTimeout(() => { settingsStatus.textContent = "" }, 2000)
 }
@@ -134,13 +135,22 @@ async function saveSettings() {
 async function resetSettings() {
   await chrome.storage.local.set({ [SETTINGS_KEY]: DEFAULT_SETTINGS })
   settingsBackendUrl.value = DEFAULT_SETTINGS.backendUrl
+  settingsBackendToken.value = DEFAULT_SETTINGS.backendToken
   settingsMaxClaims.value = String(DEFAULT_SETTINGS.maxClaims)
   settingsStatus.textContent = "Defaults restored"
   setTimeout(() => { settingsStatus.textContent = "" }, 2000)
 }
 
+async function testConnection() {
+  testConnectionStatus.textContent = "Testing…"
+  const ok = await testBackendConnection(settingsBackendUrl.value, settingsBackendToken.value.trim())
+  testConnectionStatus.textContent = ok ? "Connected" : "Could not reach backend"
+  setTimeout(() => { testConnectionStatus.textContent = "" }, 3000)
+}
+
 saveSettingsBtn.addEventListener("click", saveSettings)
 resetSettingsBtn.addEventListener("click", resetSettings)
+testConnectionBtn.addEventListener("click", testConnection)
 
 /* ───────── History ───────── */
 
@@ -151,13 +161,6 @@ async function getHistory(): Promise<HistoryEntry[]> {
   } catch {
     return []
   }
-}
-
-async function addToHistory(entry: HistoryEntry) {
-  const history = await getHistory()
-  history.unshift(entry)
-  if (history.length > MAX_HISTORY) history.length = MAX_HISTORY
-  await chrome.storage.local.set({ [HISTORY_KEY]: history })
 }
 
 async function clearHistory() {
@@ -335,18 +338,6 @@ function renderClaims(claims: ClaimCheck[]) {
   }
 }
 
-function pageEligibilityMessage(url: string): string | null {
-  try {
-    const parsed = new URL(url)
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return "Clarity can only check public http(s) webpages. Open an article, video, or public post first."
-    }
-    return null
-  } catch {
-    return "Clarity could not identify this page. Open a public webpage and try again."
-  }
-}
-
 /* ───────── Main action ───────── */
 
 async function checkPage() {
@@ -357,6 +348,14 @@ async function checkPage() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
     if (!tab?.id) throw new Error("No active tab")
+
+    const eligibility = assessPageUrl(tab.url ?? "")
+    if (eligibility) {
+      emptyState.innerHTML = `<p>${escapeHtml(eligibility)}</p>`
+      emptyState.style.display = "block"
+      setStatus("ineligible")
+      return
+    }
 
     setProgress(25)
     const pageResponse = await chrome.runtime.sendMessage({
@@ -407,17 +406,17 @@ async function checkPage() {
 
     renderClaims(response.claims)
 
-    // Save to history
-    for (const c of response.claims) {
-      addToHistory({
-        claim: c.claim,
-        verdict: c.verdict,
-        confidence: c.confidence,
-        explanation: c.explanation,
-        checkedAt: c.checkedAt,
-        url: payload.url || "",
-      })
-    }
+    // Save to history — one merged write, newest first
+    const entries: HistoryEntry[] = response.claims.map((c: ClaimCheck) => ({
+      claim: c.claim,
+      verdict: c.verdict,
+      confidence: c.confidence,
+      explanation: c.explanation,
+      checkedAt: c.checkedAt,
+      url: payload.url || "",
+    }))
+    const merged = mergeHistory(await getHistory(), entries, MAX_HISTORY)
+    await chrome.storage.local.set({ [HISTORY_KEY]: merged })
   } catch (err) {
     emptyState.innerHTML = "<p>Could not communicate with this page. Reload and try again.</p>"
     emptyState.style.display = "block"
@@ -431,6 +430,3 @@ async function checkPage() {
 /* ───────── Events ───────── */
 
 checkBtn.addEventListener("click", checkPage)
-
-// Auto-run on open
-checkPage()

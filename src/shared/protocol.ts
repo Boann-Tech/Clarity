@@ -182,3 +182,77 @@ export function assessmentFromResponse(raw: RawClaimResponse): ClaimCheck {
     checkedAt: raw.checkedAt || new Date().toISOString(),
   }
 }
+
+/* ───────── Settings, URL, and host contracts (shared) ───────── */
+
+export interface AppSettings {
+  backendUrl: string
+  backendToken: string
+  maxClaims: number
+}
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  backendUrl: "http://localhost:8080",
+  backendToken: "",
+  maxClaims: 10,
+}
+
+export function normalizeBackendUrl(url: string): string {
+  const trimmed = url.trim().replace(/\/+$/, "")
+  if (!trimmed) return DEFAULT_SETTINGS.backendUrl
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
+}
+
+export function resolveSettings(stored: unknown): AppSettings {
+  const value = (stored ?? {}) as Partial<AppSettings>
+  const maxClaims = Number(value.maxClaims)
+  return {
+    backendUrl: normalizeBackendUrl(String(value.backendUrl ?? DEFAULT_SETTINGS.backendUrl)),
+    backendToken: typeof value.backendToken === "string" ? value.backendToken : "",
+    maxClaims: Number.isFinite(maxClaims)
+      ? Math.min(Math.max(Math.round(maxClaims), 1), 20)
+      : DEFAULT_SETTINGS.maxClaims,
+  }
+}
+
+export function mergeHistory<T>(existing: T[], additions: T[], max: number): T[] {
+  return [...additions, ...existing].slice(0, max)
+}
+
+export function isHostMatch(host: string, domain: string): boolean {
+  const h = host.toLowerCase()
+  const d = domain.toLowerCase()
+  return h === d || h.endsWith(`.${d}`)
+}
+
+export function assessPageUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "Clarity can only check public http(s) webpages. Open an article, video, or public post first."
+    }
+    return null
+  } catch {
+    return "Clarity could not identify this page. Open a public webpage and try again."
+  }
+}
+
+export function mapTier(tier: string): Citation["sourceTier"] {
+  if (tier === "primary") return "primary"
+  if (tier === "fact_check") return "fact_check"
+  return "secondary_news"
+}
+
+export async function testBackendConnection(url: string, token: string): Promise<boolean> {
+  try {
+    const headers: Record<string, string> = {}
+    if (token) headers.Authorization = `Bearer ${token}`
+    const response = await fetch(`${normalizeBackendUrl(url)}/api/health`, {
+      headers,
+      signal: AbortSignal.timeout(5000),
+    })
+    return response.ok
+  } catch {
+    return false
+  }
+}
