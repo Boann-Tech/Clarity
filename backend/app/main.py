@@ -153,7 +153,7 @@ async def check_claim(
         return CheckResponse.model_validate(cached)
 
     def _finish(response: CheckResponse) -> CheckResponse:
-        _response_cache.set(response.normalized_claim, response.model_dump())
+        _response_cache.set(normalized_claim, response.model_dump())
         return response
 
     llm_available = settings.llm_enabled and bool(settings.bifrost_api_key)
