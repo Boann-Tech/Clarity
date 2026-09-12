@@ -51,6 +51,15 @@ def test_health_does_not_leak_model():
     assert body["provider"] == "none"
 
 
+def test_health_reports_enabled_llm(llm_enabled):
+    body = TestClient(app).get("/api/health").json()
+    assert body["llm_enabled"] is True
+    assert body["provider"] == "custom"
+    assert body["model_configured"] is True
+    assert "model" not in body
+    assert "gateway" not in body
+
+
 def test_cache_returns_same_request_id(monkeypatch):
     monkeypatch.setattr(config.settings, "cache_ttl_seconds", 60)
     monkeypatch.setattr(config.settings, "api_token", None)

@@ -24,6 +24,7 @@ class ProviderPreset:
     name: str
     base_url: str | None
     requires_key: bool = True
+    keyless_placeholder: str = KEYLESS_PLACEHOLDER
 
 
 PROVIDERS: dict[str, ProviderPreset] = {
@@ -44,7 +45,7 @@ PROVIDERS: dict[str, ProviderPreset] = {
 }
 
 
-@dataclass
+@dataclass(frozen=True)
 class LLMConfig:
     enabled: bool = False
     provider: str = "none"
@@ -91,7 +92,7 @@ def resolve_llm_config(settings) -> LLMConfig:
     if not api_key:
         if preset.requires_key:
             return _disabled(f"CLARITY_LLM_API_KEY is required for provider '{provider_name}'")
-        api_key = KEYLESS_PLACEHOLDER
+        api_key = preset.keyless_placeholder
 
     raw_headers = getattr(settings, "llm_extra_headers", "{}") or "{}"
     try:
@@ -139,7 +140,7 @@ def get_llm_config() -> LLMConfig:
             logger.info(
                 "LLM enabled: provider=%s host=%s",
                 _llm_config.provider,
-                urlparse(_llm_config.base_url).netloc or _llm_config.base_url,
+                urlparse(_llm_config.base_url).hostname or "unset",
             )
         else:
             logger.warning("LLM disabled: %s", _llm_config.reason)

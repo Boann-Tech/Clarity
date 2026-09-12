@@ -1,3 +1,5 @@
+import logging
+from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
 
 import pytest
@@ -7,6 +9,7 @@ from app.providers import (
     KEYLESS_PLACEHOLDER,
     PROVIDERS,
     LLMConfig,
+    ProviderPreset,
     resolve_llm_config,
 )
 
@@ -66,6 +69,24 @@ def test_keyless_preset_uses_placeholder_key():
     assert config.api_key == KEYLESS_PLACEHOLDER
 
 
+def test_keyless_preset_uses_its_own_placeholder(monkeypatch):
+    from app import providers
+
+    monkeypatch.setitem(
+        providers.PROVIDERS,
+        "ollama",
+        ProviderPreset(
+            "ollama",
+            "http://localhost:11434/v1",
+            requires_key=False,
+            keyless_placeholder="local-token",
+        ),
+    )
+    config = resolve_llm_config(settings(llm_provider="ollama", llm_api_key=""))
+    assert config.enabled
+    assert config.api_key == "local-token"
+
+
 def test_custom_requires_base_url():
     config = resolve_llm_config(settings(llm_provider="custom", llm_base_url=None))
     assert not config.enabled
@@ -97,11 +118,11 @@ def test_invalid_token_param_disables():
     assert "CLARITY_LLM_MAX_TOKENS_PARAM" in config.reason
 
 
-def test_non_positive_timeout_disables():
-    for bad in (0, -1):
-        config = resolve_llm_config(settings(llm_timeout=bad))
-        assert not config.enabled
-        assert "CLARITY_LLM_TIMEOUT" in config.reason
+@pytest.mark.parametrize("bad", [0, -1, True, 30.5, "30"])
+def test_non_positive_timeout_disables(bad):
+    config = resolve_llm_config(settings(llm_timeout=bad))
+    assert not config.enabled
+    assert "CLARITY_LLM_TIMEOUT" in config.reason
 
 
 def test_llm_enabled_false_disables_even_with_full_config():
@@ -136,3 +157,54 @@ def test_get_llm_config_caches(monkeypatch):
     second = providers.get_llm_config()
     assert first is second
     assert calls["n"] == 1
+
+
+def test_llm_config_is_frozen():
+    config = LLMConfig(
+        enabled=True,
+        provider="custom",
+        base_url="http://x/v1",
+        api_key="k",
+        model="m",
+    )
+    with pytest.raises(FrozenInstanceError):
+        config.enabled = False
+
+
+def test_get_llm_config_logs_host_without_userinfo(monkeypatch, caplog):
+    from app import providers
+
+    config = LLMConfig(
+        enabled=True,
+        provider="custom",
+        base_url="http://user:s3cret@internal.example:9000/v1",
+        api_key="k",
+        model="m",
+    )
+    monkeypatch.setattr(providers, "_llm_config", None)
+    monkeypatch.setattr(providers, "resolve_llm_config", lambda _settings: config)
+
+    with caplog.at_level(logging.INFO, logger="clarity.providers"):
+        providers.get_llm_config()
+
+    assert "s3cret" not in caplog.text
+    assert "internal.example" in caplog.text
+
+
+def test_real_settings_wire_into_resolver(monkeypatch):
+    from app import config, providers
+
+    monkeypatch.setattr(config.settings, "llm_enabled", True)
+    monkeypatch.setattr(config.settings, "llm_provider", "custom")
+    monkeypatch.setattr(config.settings, "llm_base_url", "http://box:9000/v1")
+    monkeypatch.setattr(config.settings, "llm_api_key", "k")
+    monkeypatch.setattr(config.settings, "llm_model", "m")
+    monkeypatch.setattr(config.settings, "llm_extra_headers", "{}")
+    monkeypatch.setattr(config.settings, "llm_max_tokens_param", "max_tokens")
+    monkeypatch.setattr(config.settings, "llm_timeout", 5)
+    monkeypatch.setattr(providers, "_llm_config", None)
+
+    resolved = providers.get_llm_config()
+    assert resolved.enabled is True
+    assert resolved.base_url == "http://box:9000/v1"
+
