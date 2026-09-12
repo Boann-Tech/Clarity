@@ -9,18 +9,53 @@ Phases:
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from urllib.parse import urlparse
-from xml.etree import ElementTree as ET
+from urllib.parse import parse_qs, urljoin, urlparse
 
+import defusedxml.ElementTree as ET
 import httpx
 from app.config import settings
 from app.sources import classify_domain, deduplicate_and_rank, tier_weight
 
 
 # ── Search backends ──
+
+
+def parse_ddg_results(html: str, max_results: int) -> list[dict]:
+    results = []
+    seen = set()
+    pattern = re.compile(
+        r'<a([^>]*class=["\'][^"\']*result-link[^"\']*["\'][^>]*)>(.*?)</a>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    for attrs, title_html in pattern.findall(html):
+        if len(results) >= max_results:
+            break
+        href_match = re.search(r'href=["\']([^"\']+)["\']', attrs, re.IGNORECASE)
+        if not href_match:
+            continue
+        href = href_match.group(1)
+        if href.startswith("//"):
+            href = "https:" + href
+        parsed = urlparse(href)
+        if "duckduckgo.com" in parsed.netloc:
+            uddg = parse_qs(parsed.query).get("uddg")
+            if not uddg:
+                continue
+            href = uddg[0]
+        if not href.startswith(("http://", "https://")) or href in seen:
+            continue
+        title = re.sub(r"<[^>]+>", "", title_html).strip()
+        if not title:
+            continue
+        seen.add(href)
+        results.append({"title": title, "url": href, "snippet": "", "source": "duckduckgo"})
+    return results
 
 
 async def search_ddg(query: str, max_results: int = 10) -> list[dict]:
@@ -44,31 +79,9 @@ async def search_ddg(query: str, max_results: int = 10) -> list[dict]:
     except Exception:
         return []
 
-    # Parse only result links. A challenge page contains generic DDG links
-    # (such as the literal 'here' link) but no result-link markup.
-    results = []
-    html = resp.text
-    blocks = re.findall(
-        r'<a[^>]+class=["\'][^"\']*result-link[^"\']*["\'][^>]*href=["\'](https?://[^"\']+)["\'][^>]*>(.*?)</a>',
-        html,
-        re.IGNORECASE | re.DOTALL,
-    )
-    seen = set()
-    for href, title_text in blocks:
-        if len(results) >= max_results:
-            break
-        title = re.sub(r"<[^>]+>", "", title_text).strip()
-        if not title or href in seen:
-            continue
-        seen.add(href)
-        results.append({
-            "title": title,
-            "url": href,
-            "snippet": "",
-            "source": "duckduckgo",
-        })
-
-    return results
+    if resp.status_code != 200 or "duckduckgo.com" not in str(resp.url):
+        return []
+    return parse_ddg_results(resp.text, max_results)
 
 
 async def search_bing_rss(query: str, max_results: int = 10) -> list[dict]:
@@ -85,6 +98,8 @@ async def search_bing_rss(query: str, max_results: int = 10) -> list[dict]:
                 headers={"User-Agent": settings.user_agent},
             )
             response.raise_for_status()
+            if len(response.content) > 1_000_000:
+                return []
         root = ET.fromstring(response.content)
     except Exception:
         return []
@@ -167,17 +182,17 @@ async def search_serpapi(query: str, max_results: int = 10) -> list[dict]:
     ][:max_results]
 
 
+US_MARKERS = re.compile(r"\b(?:u\.?s\.?a?|united states|american)\b", re.IGNORECASE)
+INFLATION_MARKERS = re.compile(r"\b(?:inflation|cpi|consumer price)\b", re.IGNORECASE)
+
+
 async def search_bls_cpi(claim: str) -> list[dict]:
     """Retrieve US CPI-U annual evidence directly from the public BLS API.
 
     This narrow connector bypasses generic search for US inflation claims and
     returns a source card backed by BLS's CPI-U series (CUUR0000SA0).
     """
-    lowered = claim.lower()
-    us_markers = ("us ", "u.s.", "united states", "american")
-    if not any(marker in lowered for marker in us_markers) or not any(
-        marker in lowered for marker in ("inflation", "cpi", "consumer price")
-    ):
+    if not US_MARKERS.search(claim) or not INFLATION_MARKERS.search(claim):
         return []
 
     years = [int(value) for value in re.findall(r"\b(20\d{2})\b", claim)]
@@ -195,20 +210,22 @@ async def search_bls_cpi(claim: str) -> list[dict]:
     except Exception:
         return []
 
-    if payload.get("status") != "REQUEST_SUCCEEDED":
+    try:
+        if payload.get("status") != "REQUEST_SUCCEEDED":
+            return []
+        series = payload.get("Results", {}).get("series", [])
+        data = series[0].get("data", []) if series else []
+        values = {
+            int(point["year"]): point["value"]
+            for point in data
+            if point.get("period") == "M12" and point.get("value") not in {None, "-"}
+        }
+        if end_year not in values or start_year not in values:
+            return []
+        current = float(values[end_year])
+        prior = float(values[start_year])
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
         return []
-    series = payload.get("Results", {}).get("series", [])
-    data = series[0].get("data", []) if series else []
-    values = {
-        int(point["year"]): point["value"]
-        for point in data
-        if point.get("period") == "M12" and point.get("value") not in {None, "-"}
-    }
-    if end_year not in values or start_year not in values:
-        return []
-
-    current = float(values[end_year])
-    prior = float(values[start_year])
     annual_change = ((current - prior) / prior) * 100
     snippet = (
         f"BLS CPI-U (not seasonally adjusted) was {current:.3f} in December {end_year}, "
@@ -290,7 +307,6 @@ async def search_evidence(query: str, max_results: int = 10) -> list[dict]:
     # connector supplies evidence, and all results still require validation.
     tasks.append(search_bing_rss(query, max_results))
 
-    import asyncio
     search_results = await asyncio.gather(*tasks, return_exceptions=True)
     all_results.extend(direct_results)
 
@@ -313,50 +329,110 @@ async def search_evidence(query: str, max_results: int = 10) -> list[dict]:
 
 # ── Page fetching ──
 
+CURATED_TIERS = {"primary", "fact_check", "secondary_news"}
+REDIRECT_CODES = {301, 302, 303, 307, 308}
+MAX_REDIRECTS = 5
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
 
-async def fetch_page(url: str) -> str | None:
-    """Fetch a page and return its HTML for bounded local text extraction.
 
-    Curated sources receive one browser-UA retry for 401/403/429 responses;
-    unknown and excluded sites are not retried.
-    """
-    source_tier = classify_domain(url).tier
-    curated = source_tier in {"primary", "fact_check", "secondary_news"}
-    headers = {"User-Agent": settings.user_agent}
-    browser_headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    }
+@dataclass
+class FetchedPage:
+    html: str
+    final_url: str
 
+
+def is_public_http_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme in ("http", "https") and bool(parsed.hostname)
+
+
+async def host_is_public(host: str) -> bool:
+    if not host:
+        return False
     try:
-        async with httpx.AsyncClient(
-            timeout=settings.fetch_timeout,
-            follow_redirects=True,
-            max_redirects=5,
-        ) as client:
-            resp = await client.get(url, headers=headers)
-            if curated and resp.status_code in {401, 403, 429}:
-                resp = await client.get(url, headers=browser_headers)
-            resp.raise_for_status()
+        infos = await asyncio.get_running_loop().getaddrinfo(host, None)
+    except OSError:
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        try:
+            address = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if not address.is_global:
+            return False
+    return True
 
-            content_type = resp.headers.get("content-type", "")
-            if "text/html" not in content_type and "text/plain" not in content_type:
-                return None
 
-            html = resp.text
-            # Official release pages (notably BLS) often include large shared
-            # page templates. Permit a bounded larger payload only for curated
-            # sources, then still reduce the extracted text to a small passage.
-            max_html_chars = 2_000_000 if curated else 200_000
-            if len(html) > max_html_chars:
-                return None
+async def _stream_page(client, url: str, headers: dict, max_bytes: int):
+    """Return (status, headers, body_or_None, final_url)."""
+    async with client.stream("GET", url, headers=headers) as response:
+        status = response.status_code
+        response_headers = dict(response.headers)
+        if status in REDIRECT_CODES:
+            return status, response_headers, None, str(response.url)
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if total > max_bytes:
+                return status, response_headers, None, str(response.url)
+            chunks.append(chunk)
+        body = b"".join(chunks).decode(response.charset_encoding or "utf-8", errors="replace")
+        return status, response_headers, body, str(response.url)
 
-            return html
+
+async def fetch_page(url: str) -> FetchedPage | None:
+    """Fetch a curated page, validating every hop against SSRF and tier rules.
+
+    Unknown or excluded domains are never requested. Redirects are followed
+    manually (max 5) and every hop must be a public http(s) URL on a curated
+    domain. Only the final URL's content is returned.
+    """
+    current = url
+    try:
+        async with httpx.AsyncClient(timeout=settings.fetch_timeout) as client:
+            for _ in range(MAX_REDIRECTS + 1):
+                if not is_public_http_url(current):
+                    return None
+                tier = classify_domain(current).tier
+                if tier not in CURATED_TIERS:
+                    return None
+                host = urlparse(current).hostname or ""
+                if not await host_is_public(host):
+                    return None
+                max_bytes = 2_000_000 if tier in {"primary", "fact_check"} else 200_000
+                status, headers, body, final_url = await _stream_page(
+                    client, current, {"User-Agent": settings.user_agent}, max_bytes
+                )
+                if status in {401, 403, 429}:
+                    status, headers, body, final_url = await _stream_page(
+                        client, current, BROWSER_HEADERS, max_bytes
+                    )
+                if status in REDIRECT_CODES:
+                    location = headers.get("location")
+                    if not location:
+                        return None
+                    current = urljoin(current, location)
+                    continue
+                if status >= 400 or body is None:
+                    return None
+                content_type = headers.get("content-type", "")
+                if "text/html" not in content_type and "text/plain" not in content_type:
+                    return None
+                if classify_domain(final_url).tier not in CURATED_TIERS:
+                    return None
+                return FetchedPage(html=body, final_url=final_url)
     except Exception:
         return None
+    return None
 
 
 def extract_text_from_html(html: str, max_chars: int = 8000) -> str:
@@ -450,115 +526,96 @@ def estimate_publish_date(html: str) -> str | None:
 # ── Full evidence pipeline ──
 
 
-async def retrieve_evidence(
-    claim: str,
-    max_sources: int = 8,
-    use_llm: bool = False,
-) -> list[dict]:
-    """Full evidence retrieval pipeline.
+PASSAGE_MIN_CHARS = 40
 
-    1. Search the web for the claim
-    2. Fetch each result page
-    3. Extract relevant passages
-    4. Classify and rank by source quality
-    5. Return deduplicated, ranked citations
-    """
-    # Step 1: Search
+
+async def retrieve_evidence(claim: str, max_sources: int = 8, use_llm: bool = False) -> list[dict]:
     search_results = await search_evidence(claim, max_results=15)
     if not search_results:
         return []
 
-    # Step 2-3: Fetch + extract passages
-    raw_sources: list[dict] = []
-    for result in search_results[:max_sources]:
-        url = result["url"]
-        # Structured API connectors already returned the factual passage and
-        # retrieval status. Preserve that evidence rather than scraping a
-        # marketing/landing page for the same source.
+    curated: list[dict] = []
+    seen_urls: set[str] = set()
+    for result in search_results:
+        url = result.get("url", "")
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        if classify_domain(url).tier not in CURATED_TIERS:
+            continue
+        curated.append(result)
+    if not curated:
+        return []
+
+    semaphore = asyncio.Semaphore(4)
+
+    async def build_source(result: dict) -> dict | None:
         if result.get("source") == "bls_cpi_api":
-            raw_sources.append(result.copy())
-            continue
-
-        html = await fetch_page(url)
-        if not html:
-            raw_sources.append({
-                "title": result["title"],
-                "url": url,
-                "snippet": result.get("snippet", ""),
-                "published_date": None,
-                "relevance": 0.3,
-                "retrieval_status": "fetch_error",
-            })
-            continue
-
-        text = extract_text_from_html(html)
+            return result.copy()
+        async with semaphore:
+            fetched = await fetch_page(result["url"])
+        if fetched is None:
+            return None
+        text = extract_text_from_html(fetched.html)
         passage = extract_relevant_passage(text, claim)
-        pub_date = estimate_publish_date(html)
-
-        raw_sources.append({
-            "title": result["title"],
-            "url": url,
-            "snippet": passage or result.get("snippet", ""),
-            "published_date": pub_date,
-            "relevance": 0.6 if passage else 0.3,
+        if len(passage.strip()) < PASSAGE_MIN_CHARS:
+            return None
+        return {
+            "title": result.get("title", "Untitled"),
+            "url": fetched.final_url,
+            "snippet": passage,
+            "published_date": estimate_publish_date(fetched.html),
+            "relevance": 0.6,
             "retrieval_status": "ok",
-        })
+        }
 
-    # Step 4: Deduplicate, classify, rank
+    built = await asyncio.gather(*(build_source(r) for r in curated[:max_sources]))
+    raw_sources = [source for source in built if source is not None]
+    if not raw_sources:
+        return []
+
     ranked = deduplicate_and_rank(raw_sources)
 
-    # Step 4b: Optional LLM passage classification
     if use_llm and ranked:
         try:
             from app.llm import classify_passages
 
-            passage_inputs = []
-            for i, src in enumerate(ranked):
-                passage_inputs.append({
+            passage_inputs = [
+                {
                     "index": i,
                     "text": src.get("snippet", "")[:800],
                     "url": src.get("url", ""),
                     "tier": src.get("tier", "unknown"),
-                })
-            classified = classify_passages(claim, passage_inputs)
-            # Merge LLM classifications back into ranked sources
+                }
+                for i, src in enumerate(ranked)
+            ]
+            classified = await asyncio.to_thread(classify_passages, claim, passage_inputs)
             for classified_p in classified:
                 idx = classified_p.get("index")
-                if idx is not None and idx < len(ranked):
+                if isinstance(idx, int) and 0 <= idx < len(ranked):
                     ranked[idx]["relation"] = classified_p.get("relation", "context")
                     ranked[idx]["llm_confidence"] = classified_p.get("llm_confidence", 0.5)
                     ranked[idx]["reasoning"] = classified_p.get("reasoning", "")
-            # Generic landing/category pages may come from a trusted domain
-            # but are not evidence. Never let an LLM-marked irrelevant page
-            # enter verdict synthesis or the public citation list.
-            ranked = [
-                src for src in ranked
-                if src.get("relation", "context") != "irrelevant"
-            ]
+            ranked = [src for src in ranked if src.get("relation", "context") != "irrelevant"]
         except Exception:
             for src in ranked:
                 src.setdefault("relation", "context")
 
-    # Step 5: Format as citations
     now = datetime.now(timezone.utc).isoformat()
-    citations = []
-    for src in ranked[:max_sources]:
-        sq = classify_domain(src["url"])
-        citations.append({
+    return [
+        {
             "title": src["title"],
-            "publisher": sq.domain,
+            "publisher": classify_domain(src["url"]).domain,
             "url": src["url"],
             "published_date": src.get("published_date"),
             "accessed_at": now,
-            "tier": sq.tier,
+            "tier": classify_domain(src["url"]).tier,
             "snippet": src["snippet"],
             "relevance_score": round(src.get("relevance_score", 0), 2),
             "retrieval_status": src.get("retrieval_status", "ok"),
-            # LLM annotations stay internal to the backend verdict stage;
-            # extra keys are ignored by the public CitationSource model.
             "relation": src.get("relation", "context"),
             "llm_confidence": src.get("llm_confidence", 0.5),
             "reasoning": src.get("reasoning", ""),
-        })
-
-    return citations
+        }
+        for src in ranked[:max_sources]
+    ]

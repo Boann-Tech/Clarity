@@ -57,6 +57,46 @@ def test_bls_connector_ignores_non_us_or_non_inflation_claims():
     assert asyncio.run(search_bls_cpi("The United States elected a president.")) == []
 
 
+def test_bls_connector_ignores_us_substring_false_positive(monkeypatch):
+    from app import evidence
+
+    calls = []
+
+    def fail_if_called(*args, **_kwargs):
+        calls.append(args)
+        raise AssertionError("BLS API must not be called for non-US claims")
+
+    monkeypatch.setattr(evidence.httpx, "AsyncClient", fail_if_called)
+    assert asyncio.run(evidence.search_bls_cpi("Consensus on inflation is growing.")) == []
+    assert calls == []
+
+
+def test_bls_connector_survives_malformed_payload(monkeypatch):
+    from app import evidence
+
+    class Response:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return ["not", "a", "dict"]
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(evidence.httpx, "AsyncClient", lambda **_kwargs: Client())
+    assert asyncio.run(evidence.search_bls_cpi("US inflation in 2024.")) == []
+
+
 def test_retrieve_evidence_preserves_direct_bls_api_evidence(monkeypatch):
     """A direct BLS API result is evidence itself; do not re-scrape its web page."""
     from app import evidence
