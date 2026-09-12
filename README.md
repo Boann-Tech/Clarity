@@ -61,7 +61,7 @@ Unverified blogs, anonymous forum posts, AI-generated content, and social media 
 
 The evidence retrieval backend is a standalone FastAPI service at `backend/`.
 
-**Fail closed:** a verdict is only issued when evidence is fetched and classified. Without a `CLARITY_BIFROST_API_KEY`, the deterministic evaluator returns **Unverified** — Clarity never fabricates support.
+**Fail closed:** a verdict is only issued when evidence is fetched and classified. Without a configured LLM provider, the deterministic evaluator returns **Unverified** — Clarity never fabricates support.
 
 ### Retrieval providers
 
@@ -93,24 +93,49 @@ docker run --env-file backend/.env -p 8080:8080 clarity-backend
 
 **Search backends** — see [Retrieval providers](#retrieval-providers) above. `CLARITY_DDG_ENABLED` toggles the DuckDuckGo fallback (enabled by default).
 
-**Evidence pipeline:** Search → Fetch pages → Extract relevant passages → Classify source tier → Deduplicate and rank → Bifrost model classifies passages and synthesizes a constrained verdict
+**Evidence pipeline:** Search → Fetch pages → Extract relevant passages → Classify source tier → Deduplicate and rank → the configured LLM classifies passages and synthesizes a constrained verdict
 
-### AI gateway: Bifrost
+### LLM providers
 
-Clarity sends **all** LLM traffic through Bifrost’s OpenAI-compatible API. Bifrost owns the deployed model alias, provider credentials, routing, load balancing, and failover. Clarity never calls DeepSeek (or any other model provider) directly.
+Clarity sends LLM traffic to any provider that exposes the OpenAI Chat Completions API. Three values configure it: base URL, API key, and model. Named presets supply the base URL.
+
+| Provider | Preset | Base URL | Key |
+|---|---|---|---|
+| OpenAI | `openai` | `https://api.openai.com/v1` | required |
+| DeepSeek | `deepseek` | `https://api.deepseek.com/v1` | required |
+| Groq | `groq` | `https://api.groq.com/openai/v1` | required |
+| OpenRouter | `openrouter` | `https://openrouter.ai/api/v1` | required |
+| Together | `together` | `https://api.together.xyz/v1` | required |
+| Mistral | `mistral` | `https://api.mistral.ai/v1` | required |
+| xAI | `xai` | `https://api.x.ai/v1` | required |
+| Perplexity | `perplexity` | `https://api.perplexity.ai` | required |
+| Ollama | `ollama` | `http://localhost:11434/v1` | not required |
+| LM Studio | `lmstudio` | `http://localhost:1234/v1` | not required |
+| llama.cpp | `llamacpp` | `http://localhost:8080/v1` | not required |
+| vLLM | `vllm` | `http://localhost:8000/v1` | not required |
+| Bifrost (gateway) | `bifrost` | `http://localhost:8081/v1` | required |
+| Anything else | `custom` | set `CLARITY_LLM_BASE_URL` | required |
 
 ```bash
-cd backend
-cp .env.example .env
+# Example: DeepSeek
+CLARITY_LLM_PROVIDER=deepseek
+CLARITY_LLM_API_KEY=sk-...
+CLARITY_LLM_MODEL=deepseek-chat
 
-# Point to Bifrost's OpenAI-compatible /v1 endpoint.
-# Use the exact model/deployment alias configured in Bifrost.
-CLARITY_BIFROST_API_KEY=your-bifrost-key
-CLARITY_BIFROST_BASE_URL=http://your-bifrost-host:8081/v1
-CLARITY_BIFROST_MODEL=deepseek-pro
+# Example: local Ollama
+CLARITY_LLM_PROVIDER=ollama
+CLARITY_LLM_MODEL=llama3.1
+
+# Example: OpenRouter with attribution headers
+CLARITY_LLM_PROVIDER=openrouter
+CLARITY_LLM_API_KEY=sk-or-...
+CLARITY_LLM_MODEL=deepseek/deepseek-chat
+CLARITY_LLM_EXTRA_HEADERS={"HTTP-Referer":"https://github.com/boanntech/clarity"}
 ```
 
-The LLM may normalize claims, classify **retrieved** passages as support/contradiction/context, and synthesize a verdict from those passages. It cannot create citations: the evidence-before-verdict guard remains deterministic. If Bifrost is unavailable or rejects a feature such as JSON mode, Clarity retries with standard chat completion and ultimately falls back to the deterministic evaluator. Without a Bifrost key the evaluator returns **Unverified** — it never fabricates support.
+Models that reject `max_tokens` (some newer OpenAI models) can use `CLARITY_LLM_MAX_TOKENS_PARAM=max_completion_tokens`. If a provider rejects JSON mode, Clarity retries with a standard chat completion and ultimately falls back to the deterministic evaluator. With no model configured, evaluations are **Unverified** — Clarity never fabricates support.
+
+**Migration from Bifrost-only config:** rename `CLARITY_BIFROST_API_KEY`/`CLARITY_BIFROST_BASE_URL`/`CLARITY_BIFROST_MODEL` to `CLARITY_LLM_API_KEY`/`CLARITY_LLM_BASE_URL`/`CLARITY_LLM_MODEL`, and set `CLARITY_LLM_PROVIDER=bifrost` (or `custom` with the same base URL).
 
 ### API security
 
