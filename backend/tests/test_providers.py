@@ -110,6 +110,12 @@ def test_llm_enabled_false_disables_even_with_full_config():
     assert "CLARITY_LLM_ENABLED" in config.reason
 
 
+def test_non_string_settings_values_do_not_raise():
+    for field in ("llm_provider", "llm_base_url", "llm_model", "llm_api_key", "llm_max_tokens_param"):
+        config = resolve_llm_config(settings(**{field: 5}))
+        assert config.enabled is False
+
+
 def test_allowed_token_params_constant():
     assert ALLOWED_TOKEN_PARAMS == ("max_tokens", "max_completion_tokens")
 

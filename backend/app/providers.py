@@ -61,26 +61,33 @@ def _disabled(reason: str) -> LLMConfig:
     return LLMConfig(enabled=False, reason=reason)
 
 
+def _text(value: object) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
 def resolve_llm_config(settings) -> LLMConfig:
     """Compose the final LLM configuration without ever raising."""
     if not getattr(settings, "llm_enabled", True):
         return _disabled("CLARITY_LLM_ENABLED=false")
 
-    provider_name = (getattr(settings, "llm_provider", "openai") or "").strip().lower()
+    provider_name = _text(getattr(settings, "llm_provider", "openai")).lower()
     preset = PROVIDERS.get(provider_name)
     if preset is None:
         valid = ", ".join(sorted(PROVIDERS))
         return _disabled(f"unknown CLARITY_LLM_PROVIDER '{provider_name}' (valid: {valid})")
 
-    base_url = (getattr(settings, "llm_base_url", None) or preset.base_url or "").strip()
+    raw_base_url = getattr(settings, "llm_base_url", None)
+    if raw_base_url is not None and not isinstance(raw_base_url, str):
+        return _disabled("CLARITY_LLM_BASE_URL must be a string")
+    base_url = _text(raw_base_url) or _text(preset.base_url)
     if not base_url:
         return _disabled("CLARITY_LLM_BASE_URL is required for provider 'custom'")
 
-    model = (getattr(settings, "llm_model", None) or "").strip()
+    model = _text(getattr(settings, "llm_model", None))
     if not model:
         return _disabled("CLARITY_LLM_MODEL is required")
 
-    api_key = (getattr(settings, "llm_api_key", None) or "").strip()
+    api_key = _text(getattr(settings, "llm_api_key", None))
     if not api_key:
         if preset.requires_key:
             return _disabled(f"CLARITY_LLM_API_KEY is required for provider '{provider_name}'")
@@ -97,7 +104,7 @@ def resolve_llm_config(settings) -> LLMConfig:
     ):
         return _disabled("CLARITY_LLM_EXTRA_HEADERS must be a JSON object of string values")
 
-    token_param = (getattr(settings, "llm_max_tokens_param", "max_tokens") or "").strip()
+    token_param = _text(getattr(settings, "llm_max_tokens_param", "max_tokens"))
     if token_param not in ALLOWED_TOKEN_PARAMS:
         allowed = ", ".join(ALLOWED_TOKEN_PARAMS)
         return _disabled(f"CLARITY_LLM_MAX_TOKENS_PARAM must be one of {allowed}")
