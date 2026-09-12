@@ -160,7 +160,10 @@ def test_retrieve_evidence_never_fetches_untrusted_domains(monkeypatch):
 
     async def fake_fetch(url):
         assert "reuters.com" in url, f"must not fetch {url}"
-        return evidence.FetchedPage(html="<article>" + ("evidence text. " * 20) + "</article>", final_url=url)
+        return evidence.FetchedPage(
+            html="<article>Evidence text that directly supports the claim under test.</article>",
+            final_url=url,
+        )
 
     monkeypatch.setattr(evidence, "search_evidence", fake_search)
     monkeypatch.setattr(evidence, "fetch_page", fake_fetch)
@@ -407,7 +410,10 @@ def test_retrieve_evidence_deduplicates_urls_before_fetch(monkeypatch):
 
     async def fake_fetch(url):
         calls.append(url)
-        return evidence.FetchedPage(html="<article>" + ("evidence. " * 30) + "</article>", final_url=url)
+        return evidence.FetchedPage(
+            html="<article>Evidence text that directly supports the claim under test.</article>",
+            final_url=url,
+        )
 
     monkeypatch.setattr(evidence, "search_evidence", fake_search)
     monkeypatch.setattr(evidence, "fetch_page", fake_fetch)
@@ -688,7 +694,7 @@ def qualifying_citations(citations: list[dict]) -> list[dict]:
         for c in citations
         if c.get("tier") in ("primary", "fact_check")
         and c.get("retrieval_status", "ok") == "ok"
-        and str(c.get("snippet") or "").strip()
+        and str(c.get("snippet") or c.get("text") or "").strip()
     ]
 
 
@@ -1090,7 +1096,13 @@ def test_synthesize_verdict_null_limitations(monkeypatch):
     assert result["domain"] is None
 ```
 
-Add `import json` at the top. Update the old `test_synthesize_verdict_fallback_*` fixtures to include `retrieval_status: "ok"` and `snippet`/`text` where the new `qualifying_citations` is involved.
+Add `import json` at the top. Update the existing fallback fixtures so every qualifying passage carries `"snippet": "..."` (or a non-empty `"text"`) and `"retrieval_status": "ok"`, and set `relation` to `"supports"` wherever the old test asserted `supported` (context-only now fails closed):
+
+- `test_synthesize_verdict_fallback_supported`: passages `relation` → `"supports"`, add `"snippet"` values, expect `supported`.
+- `test_synthesize_verdict_fallback_contradicted`: add `"snippet": "BLS data contradicts claim."`, keep `contradicts`.
+- `test_synthesize_verdict_fallback_mixed`: add `"snippet"` values and distinct hosts (`https://reuters.com/a`, `https://apnews.com/b`), expect `misleading`.
+- `test_synthesize_verdict_fallback_secondary_only`: add `"snippet"`, expect `unverified`.
+- `test_deterministic_fallback_contradicted` / `_supported`: pass passages like `{"tier": "primary", "relation": "contradicts", "url": "https://bls.gov/data", "snippet": "BLS data."}`, keep expectations.
 
 - [ ] **Step 8: Run the full backend suite**
 
@@ -1138,9 +1150,13 @@ from app.ratelimit import SlidingWindowLimiter
 
 
 @pytest.fixture(autouse=True)
-def _reset_state():
+def _offline_and_reset(monkeypatch):
     from app import main
 
+    async def no_evidence(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(main, "retrieve_evidence", no_evidence)
     main._rate_limiter.reset()
     main._response_cache.clear()
     yield
