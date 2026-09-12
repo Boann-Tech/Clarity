@@ -7,7 +7,8 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "build": "node scripts/build.mjs"
+    "build": "node scripts/build.mjs",
+    "icons": "node scripts/generate-icons.mjs"
   },
   "keywords": [],
   "devDependencies": {

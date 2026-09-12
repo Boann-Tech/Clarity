@@ -6,6 +6,10 @@
  * collects visible text and sends it as a PagePayload.
  */
 
+import { isHostMatch } from "../shared/protocol.js"
+
+const MAX_PAGE_TEXT = 20000
+
 type PageKind = "article" | "youtube" | "social" | "other"
 
 type PagePayload = {
@@ -21,10 +25,10 @@ type PagePayload = {
 
 function detectPageKind(): PagePayload["kind"] {
   const host = window.location.hostname
-  if (host.includes("youtube.com") || host.includes("youtu.be")) return "youtube"
-  if (host.includes("twitter.com") || host.includes("x.com")) return "social"
-  if (host.includes("reddit.com")) return "social"
-  if (host.includes("facebook.com")) return "social"
+  if (isHostMatch(host, "youtube.com") || host === "youtu.be") return "youtube"
+  if (isHostMatch(host, "twitter.com") || isHostMatch(host, "x.com")) return "social"
+  if (isHostMatch(host, "reddit.com")) return "social"
+  if (isHostMatch(host, "facebook.com")) return "social"
   return "article"
 }
 
@@ -153,11 +157,11 @@ function collectPagePayload(): PagePayload {
 
   if (kind === "youtube") {
     text = extractYouTubeCaptions()
-  } else if (host.includes("twitter.com") || host.includes("x.com")) {
+  } else if (isHostMatch(host, "twitter.com") || isHostMatch(host, "x.com")) {
     text = extractTwitterText()
-  } else if (host.includes("reddit.com")) {
+  } else if (isHostMatch(host, "reddit.com")) {
     text = extractRedditText()
-  } else if (host.includes("facebook.com")) {
+  } else if (isHostMatch(host, "facebook.com")) {
     text = extractFacebookText()
   } else {
     text = extractArticleText()
@@ -167,7 +171,7 @@ function collectPagePayload(): PagePayload {
 
   return {
     title,
-    text,
+    text: text.slice(0, MAX_PAGE_TEXT),
     url: window.location.href,
     kind,
   }
