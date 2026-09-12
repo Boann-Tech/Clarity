@@ -23,6 +23,16 @@ def load_backend_env(env_file: Path | None = None) -> None:
 load_backend_env()
 
 
+def _positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+
 @dataclass
 class Settings:
     # API security — optional bearer token. Empty means unauthenticated.
@@ -43,15 +53,16 @@ class Settings:
         "Clarity/1.0 (+https://github.com/boanntech/clarity) evidence-checker"
     )
 
-    # LLM gateway — Bifrost is the single AI egress point.
-    # The configured model is the exact deployment/model alias Bifrost exposes.
-    bifrost_api_key: str | None = os.getenv("CLARITY_BIFROST_API_KEY")
-    bifrost_base_url: str = os.getenv(
-        "CLARITY_BIFROST_BASE_URL", "http://localhost:8081/v1"
-    )
-    bifrost_model: str = os.getenv("CLARITY_BIFROST_MODEL", "deepseek-pro")
+    # LLM provider — any OpenAI-compatible Chat Completions endpoint.
+    # Presets and validation live in app.providers.
     llm_enabled: bool = os.getenv("CLARITY_LLM_ENABLED", "true").lower() == "true"
-    llm_timeout: int = int(os.getenv("CLARITY_LLM_TIMEOUT", "30"))
+    llm_provider: str = os.getenv("CLARITY_LLM_PROVIDER", "openai")
+    llm_base_url: str | None = os.getenv("CLARITY_LLM_BASE_URL")
+    llm_api_key: str | None = os.getenv("CLARITY_LLM_API_KEY")
+    llm_model: str | None = os.getenv("CLARITY_LLM_MODEL")
+    llm_extra_headers: str = os.getenv("CLARITY_LLM_EXTRA_HEADERS", "{}")
+    llm_max_tokens_param: str = os.getenv("CLARITY_LLM_MAX_TOKENS_PARAM", "max_tokens")
+    llm_timeout: int = _positive_int_env("CLARITY_LLM_TIMEOUT", 30)
 
     # Rate limiting
     rate_limit_per_minute: int = int(os.getenv("CLARITY_RATE_LIMIT", "10"))

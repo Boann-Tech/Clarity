@@ -28,6 +28,7 @@ from app.models import (
     CitationSource,
     Verdict,
 )
+from app.providers import get_llm_config
 from app.ratelimit import SlidingWindowLimiter
 from app.sources import canonical_publisher
 from app.verdict import calculate_verdict, qualifying_citations
@@ -37,7 +38,7 @@ logger = logging.getLogger("clarity.api")
 app = FastAPI(
     title="Clarity API",
     version="3.0.0",
-    description="Evidence-first claim verification. Uses Bifrost-deployed models for claim normalization, passage classification, and verdict synthesis — always over retrieved sources.",
+    description="Evidence-first claim verification. Uses a configured OpenAI-compatible model for claim normalization, passage classification, and verdict synthesis — always over retrieved sources.",
     docs_url="/docs",
 )
 
@@ -66,12 +67,13 @@ app.add_middleware(
 
 @app.get("/api/health")
 async def health():
+    config = get_llm_config()
     return {
         "status": "ok",
         "version": "3.0.0",
-        "llm_enabled": settings.llm_enabled and bool(settings.bifrost_api_key),
-        "model_configured": bool(settings.bifrost_api_key),
-        "gateway": "bifrost",
+        "llm_enabled": config.enabled,
+        "provider": config.provider,
+        "model_configured": bool(config.model),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -156,7 +158,7 @@ async def check_claim(
         _response_cache.set(normalized_claim, response.model_dump())
         return response
 
-    llm_available = settings.llm_enabled and bool(settings.bifrost_api_key)
+    llm_available = get_llm_config().enabled
 
     # Step 1b: Optional LLM claim normalisation for better search queries
     search_queries = [normalized_claim]
@@ -212,7 +214,7 @@ async def check_claim(
         seen_urls.add(url)
         citations.append(c)
 
-    # Sources marked irrelevant by the Bifrost evidence classifier must never
+    # Sources marked irrelevant by the LLM evidence classifier must never
     # be rendered as citations, even if a prior process was running older code.
     citations = [
         citation for citation in citations

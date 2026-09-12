@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from app import config, main
+from app import main
 from app.main import app
 
 
@@ -24,9 +24,7 @@ def _fake_retrieve(claim, max_sources=8, use_llm=False):
     return _inner()
 
 
-def test_null_limitations_does_not_500(monkeypatch):
-    monkeypatch.setattr(config.settings, "bifrost_api_key", "test")
-    monkeypatch.setattr(config.settings, "llm_enabled", True)
+def test_null_limitations_does_not_500(monkeypatch, llm_enabled):
     monkeypatch.setattr(main, "retrieve_evidence", _fake_retrieve)
 
     import app.llm as llm
@@ -44,10 +42,7 @@ def test_null_limitations_does_not_500(monkeypatch):
     assert response.json()["assessment"]["domain"] == "economics_finance"
 
 
-def test_null_snippet_and_long_title_are_coerced(monkeypatch):
-    monkeypatch.setattr(config.settings, "bifrost_api_key", "test")
-    monkeypatch.setattr(config.settings, "llm_enabled", True)
-
+def test_null_snippet_and_long_title_are_coerced(monkeypatch, llm_enabled):
     async def retrieve(*_args, **_kwargs):
         return [{
             "title": None, "publisher": None, "url": "https://reuters.com/x", "snippet": None,
@@ -72,10 +67,7 @@ def test_null_snippet_and_long_title_are_coerced(monkeypatch):
     assert len(body["assessment"]["explanation"]) <= 600
 
 
-def test_context_host_cannot_independently_support_misleading(monkeypatch):
-    monkeypatch.setattr(config.settings, "bifrost_api_key", "test")
-    monkeypatch.setattr(config.settings, "llm_enabled", True)
-
+def test_context_host_cannot_independently_support_misleading(monkeypatch, llm_enabled):
     async def retrieve(*_args, **_kwargs):
         return [
             {"title": "A", "publisher": "reuters.com", "url": "https://reuters.com/a", "snippet": "A", "tier": "fact_check", "retrieval_status": "ok", "relation": "supports"},
@@ -99,10 +91,7 @@ def test_context_host_cannot_independently_support_misleading(monkeypatch):
     assert response.json()["assessment"]["verdict"] == "unverified"
 
 
-def test_subdomain_citations_cannot_support_misleading(monkeypatch):
-    monkeypatch.setattr(config.settings, "bifrost_api_key", "test")
-    monkeypatch.setattr(config.settings, "llm_enabled", True)
-
+def test_subdomain_citations_cannot_support_misleading(monkeypatch, llm_enabled):
     async def retrieve(*_args, **_kwargs):
         return [
             {"title": "A", "publisher": "reuters.com", "url": "https://www.reuters.com/a", "snippet": "A", "tier": "fact_check", "retrieval_status": "ok", "relation": "supports"},
@@ -126,10 +115,7 @@ def test_subdomain_citations_cannot_support_misleading(monkeypatch):
     assert response.json()["assessment"]["verdict"] == "unverified"
 
 
-def test_distinct_publishers_keep_misleading_verdict(monkeypatch):
-    monkeypatch.setattr(config.settings, "bifrost_api_key", "test")
-    monkeypatch.setattr(config.settings, "llm_enabled", True)
-
+def test_distinct_publishers_keep_misleading_verdict(monkeypatch, llm_enabled):
     async def retrieve(*_args, **_kwargs):
         return [
             {"title": "A", "publisher": "reuters.com", "url": "https://reuters.com/a", "snippet": "A", "tier": "fact_check", "retrieval_status": "ok", "relation": "supports"},
@@ -153,10 +139,7 @@ def test_distinct_publishers_keep_misleading_verdict(monkeypatch):
     assert response.json()["assessment"]["verdict"] == "misleading"
 
 
-def test_misleading_requires_support_and_contradiction_at_boundary(monkeypatch):
-    monkeypatch.setattr(config.settings, "bifrost_api_key", "test")
-    monkeypatch.setattr(config.settings, "llm_enabled", True)
-
+def test_misleading_requires_support_and_contradiction_at_boundary(monkeypatch, llm_enabled):
     async def retrieve(*_args, **_kwargs):
         return [
             {"title": "A", "publisher": "reuters.com", "url": "https://reuters.com/a", "snippet": "A", "tier": "fact_check", "retrieval_status": "ok", "relation": "supports"},

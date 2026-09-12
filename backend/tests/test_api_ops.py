@@ -17,7 +17,6 @@ def _offline_and_reset(monkeypatch):
         return []
 
     monkeypatch.setattr(main, "retrieve_evidence", no_evidence)
-    monkeypatch.setattr(config.settings, "bifrost_api_key", None)
     main._rate_limiter.reset()
     main._response_cache.clear()
     yield
@@ -44,11 +43,12 @@ def test_api_token_enforced_when_configured(monkeypatch):
     assert ok.status_code == 200
 
 
-def test_health_does_not_leak_model(monkeypatch):
-    monkeypatch.setattr(config.settings, "bifrost_api_key", None)
+def test_health_does_not_leak_model():
     body = TestClient(app).get("/api/health").json()
     assert "model" not in body
+    assert "gateway" not in body
     assert body["model_configured"] is False
+    assert body["provider"] == "none"
 
 
 def test_cache_returns_same_request_id(monkeypatch):
@@ -70,9 +70,7 @@ def test_response_cache_expires_and_bounds():
     assert cache.get("a") is None
 
 
-def test_not_checkable_cache_hit_uses_canonical_key(monkeypatch):
-    monkeypatch.setattr(config.settings, "bifrost_api_key", "test")
-    monkeypatch.setattr(config.settings, "llm_enabled", True)
+def test_not_checkable_cache_hit_uses_canonical_key(monkeypatch, llm_enabled):
     monkeypatch.setattr(config.settings, "cache_ttl_seconds", 60)
     monkeypatch.setattr(config.settings, "api_token", None)
 
@@ -102,9 +100,7 @@ def test_not_checkable_cache_hit_uses_canonical_key(monkeypatch):
     assert calls["normalize"] == 1
 
 
-def test_cache_hit_skips_evidence_retrieval(monkeypatch):
-    monkeypatch.setattr(config.settings, "bifrost_api_key", "test")
-    monkeypatch.setattr(config.settings, "llm_enabled", True)
+def test_cache_hit_skips_evidence_retrieval(monkeypatch, llm_enabled):
     monkeypatch.setattr(config.settings, "cache_ttl_seconds", 60)
     monkeypatch.setattr(config.settings, "api_token", None)
 

@@ -1,7 +1,7 @@
-"""Bifrost gateway integration for Clarity's evidence pipeline.
+"""LLM integration for Clarity's evidence pipeline.
 
-Bifrost is Clarity's single AI egress point. It exposes deployed models
-(including DeepSeek Pro) through an OpenAI-compatible endpoint.
+Clarity talks to the configured OpenAI-compatible provider, which exposes
+deployed models through an OpenAI-compatible endpoint.
 
 The LLM is used as a *judge of evidence*, not a source of it.
 It never generates citations. It only evaluates passages we already
@@ -22,33 +22,34 @@ import json
 import logging
 from typing import Any
 
-from app.config import settings
 from app.models import ClaimDomain
+from app.providers import get_llm_config
 from app.sources import canonical_publisher
 from app.verdict import calculate_verdict, qualifying_citations
 
 logger = logging.getLogger("clarity.llm")
 
-# ── Bifrost client (OpenAI-compatible) ──
+# ── LLM client (OpenAI-compatible) ──
 
 
 def _build_client():
-    """Create an OpenAI-compatible client pointing at Bifrost."""
+    """Create an OpenAI-compatible client for the configured provider."""
     try:
         from openai import OpenAI
     except ImportError:
         logger.warning("openai package not installed — LLM features disabled")
         return None
 
-    if not settings.bifrost_api_key:
-        logger.info("No Bifrost API key configured — LLM features disabled")
+    config = get_llm_config()
+    if not config.enabled:
         return None
 
     return OpenAI(
-        api_key=settings.bifrost_api_key,
-        base_url=settings.bifrost_base_url,
-        timeout=settings.llm_timeout,
+        api_key=config.api_key,
+        base_url=config.base_url,
+        timeout=config.timeout,
         max_retries=1,
+        default_headers=config.extra_headers,
     )
 
 
@@ -63,7 +64,7 @@ def _call_llm(
     max_tokens: int = 1024,
     json_mode: bool = True,
 ) -> str | None:
-    """Call the configured Bifrost-deployed model and return response text.
+    """Call the configured provider model and return response text.
 
     Returns None on any failure (caller handles fallback).
     """
@@ -71,31 +72,33 @@ def _call_llm(
     if client is None:
         return None
 
+    config = get_llm_config()
     logger.info(
-        "Bifrost LLM request: model=%s json_mode=%s max_tokens=%s",
-        settings.bifrost_model,
+        "LLM request: provider=%s model=%s json_mode=%s max_tokens=%s",
+        config.provider,
+        config.model,
         json_mode,
         max_tokens,
     )
 
     kwargs: dict[str, Any] = {
-        "model": settings.bifrost_model,
+        "model": config.model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         "temperature": temperature,
-        "max_tokens": max_tokens,
+        config.max_tokens_param: max_tokens,
     }
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 
     try:
         resp = client.chat.completions.create(**kwargs)
-        logger.info("Bifrost LLM response received: model=%s", settings.bifrost_model)
+        logger.info("LLM response received: model=%s", config.model)
         return resp.choices[0].message.content
     except Exception as first_error:
-        # Some Bifrost-backed deployments do not expose response_format.
+        # The provider may not expose response_format.
         # The prompts still require JSON, so retry once without that optional
         # OpenAI feature before falling back to deterministic evaluation.
         if json_mode:
@@ -104,9 +107,9 @@ def _call_llm(
                 resp = client.chat.completions.create(**kwargs)
                 return resp.choices[0].message.content
             except Exception as retry_error:
-                logger.warning("Bifrost LLM call failed after JSON-mode retry: %s", retry_error)
+                logger.warning("LLM call failed after JSON-mode retry: %s", retry_error)
                 return None
-        logger.warning("Bifrost LLM call failed: %s", first_error)
+        logger.warning("LLM call failed: %s", first_error)
         return None
 
 
@@ -205,7 +208,7 @@ def classify_passages(
         if isinstance(parsed, list):
             classifications = parsed
         elif isinstance(parsed, dict):
-            # Bifrost/deployed models commonly choose either response key.
+            # Deployed models commonly choose either response key.
             classifications = parsed.get("classifications") or parsed.get("passages") or []
         else:
             classifications = []

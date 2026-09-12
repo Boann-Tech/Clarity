@@ -1,7 +1,7 @@
 """Tests for LLM module — claim normalisation, passage classification, verdict synthesis.
 
-These tests verify the deterministic fallbacks (no Bifrost API key = graceful degradation).
-With `CLARITY_BIFROST_API_KEY` and a deployed-model alias set, they also exercise the LLM path.
+These tests verify the deterministic fallbacks (no configured LLM provider = graceful degradation).
+With a configured provider, they also exercise the LLM path.
 """
 
 import json
@@ -60,8 +60,8 @@ def test_classify_passages_fallback(monkeypatch):
         assert p["llm_confidence"] == 0.5
 
 
-def test_classify_passages_accepts_bifrost_passages_response(monkeypatch):
-    """Bifrost models may wrap classifications in a `passages` array."""
+def test_classify_passages_accepts_wrapped_passages_response(monkeypatch):
+    """Models may wrap classifications in a `passages` array."""
     from app import llm
 
     monkeypatch.setattr(
@@ -282,3 +282,65 @@ def test_deterministic_fallback_supported():
         1,
     )
     assert result["verdict"] == "supported"
+
+
+# ── Client configuration ──
+
+
+def test_call_llm_returns_none_when_disabled(monkeypatch):
+    from app import llm, providers
+
+    monkeypatch.setattr(providers, "_llm_config", providers.LLMConfig(enabled=False, reason="test"))
+
+    def explode(**_kwargs):
+        raise AssertionError("client must not be built when LLM is disabled")
+
+    monkeypatch.setattr("openai.OpenAI", explode)
+    assert llm._call_llm("system", "user") is None
+
+
+def test_call_llm_uses_configured_client_and_token_param(monkeypatch):
+    from app import llm, providers
+
+    config = providers.LLMConfig(
+        enabled=True,
+        provider="custom",
+        base_url="http://llm.test/v1",
+        api_key="k",
+        model="m",
+        extra_headers={"HTTP-Referer": "https://clarity.example"},
+        max_tokens_param="max_completion_tokens",
+        timeout=5,
+    )
+    monkeypatch.setattr(providers, "_llm_config", config)
+
+    client_kwargs = {}
+    create_kwargs = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            create_kwargs.update(kwargs)
+            message = type("Message", (), {"content": "{}"})()
+            choice = type("Choice", (), {"message": message})()
+            return type("Response", (), {"choices": [choice]})()
+
+    class FakeClient:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    def fake_openai(**kwargs):
+        client_kwargs.update(kwargs)
+        return FakeClient()
+
+    monkeypatch.setattr("openai.OpenAI", fake_openai)
+
+    result = llm._call_llm("system", "user", max_tokens=123, json_mode=False)
+
+    assert result == "{}"
+    assert client_kwargs["api_key"] == "k"
+    assert client_kwargs["base_url"] == "http://llm.test/v1"
+    assert client_kwargs["default_headers"] == {"HTTP-Referer": "https://clarity.example"}
+    assert client_kwargs["timeout"] == 5
+    assert create_kwargs["model"] == "m"
+    assert create_kwargs["max_completion_tokens"] == 123
+    assert "max_tokens" not in create_kwargs
