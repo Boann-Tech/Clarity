@@ -39,8 +39,6 @@ class ClaimDomain(str, Enum):
 
 class CheckRequest(BaseModel):
     claim: str = Field(..., min_length=10, max_length=500, description="The claim to check")
-    page_url: Optional[str] = Field(None, max_length=2048)
-    page_title: Optional[str] = Field(None, max_length=200)
 
     @field_validator("claim")
     @classmethod
@@ -81,4 +79,4 @@ class CheckResponse(BaseModel):
     assessment: Assessment
     citations: list[CitationSource] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
-    policy_version: str = "2.0"
+    policy_version: str = "3.0"

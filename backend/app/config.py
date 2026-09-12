@@ -25,10 +25,8 @@ load_backend_env()
 
 @dataclass
 class Settings:
-    # Server
-    host: str = os.getenv("CLARITY_HOST", "0.0.0.0")
-    port: int = int(os.getenv("CLARITY_PORT", "8080"))
-    debug: bool = os.getenv("CLARITY_DEBUG", "false").lower() == "true"
+    # API security — optional bearer token. Empty means unauthenticated.
+    api_token: str | None = os.getenv("CLARITY_API_TOKEN")
 
     # Search backends
     ddg_enabled: bool = os.getenv("CLARITY_DDG_ENABLED", "true").lower() == "true"
@@ -67,10 +65,6 @@ class Settings:
         "CLARITY_CORS_ORIGINS",
         "chrome-extension://*",
     ).split(","))
-
-    # Validation
-    max_claim_chars: int = 500
-    min_claim_chars: int = 10
 
 
 settings = Settings()

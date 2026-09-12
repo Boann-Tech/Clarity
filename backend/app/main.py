@@ -15,9 +15,10 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.cache import ResponseCache
 from app.config import settings
 from app.evidence import retrieve_evidence
 from app.models import (
@@ -27,6 +28,7 @@ from app.models import (
     CitationSource,
     Verdict,
 )
+from app.ratelimit import SlidingWindowLimiter
 from app.sources import url_host
 from app.verdict import calculate_verdict, qualifying_citations
 
@@ -39,18 +41,26 @@ app = FastAPI(
     docs_url="/docs",
 )
 
+# ── Module state ──
+
+_rate_limiter = SlidingWindowLimiter()
+_response_cache = ResponseCache()
+
 # ── CORS ──
 
 # Chrome extensions have per-install IDs, so a literal `chrome-extension://*`
 # cannot be used in allow_origins. Use a strict origin regex instead.
 CHROME_EXTENSION_ORIGIN_REGEX = r"^chrome-extension://[a-z]{32}$"
 
+_configured_origins = [origin.strip() for origin in settings.cors_origins if origin.strip()]
+_extension_wildcard = "chrome-extension://*" in _configured_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[origin for origin in settings.cors_origins if origin != "chrome-extension://*"],
-    allow_origin_regex=CHROME_EXTENSION_ORIGIN_REGEX,
+    allow_origins=[o for o in _configured_origins if o != "chrome-extension://*"],
+    allow_origin_regex=CHROME_EXTENSION_ORIGIN_REGEX if _extension_wildcard else None,
     allow_methods=["POST", "GET", "OPTIONS"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
@@ -60,10 +70,26 @@ async def health():
         "status": "ok",
         "version": "3.0.0",
         "llm_enabled": settings.llm_enabled and bool(settings.bifrost_api_key),
-        "model": settings.bifrost_model,
+        "model_configured": bool(settings.bifrost_api_key),
         "gateway": "bifrost",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+async def _enforce_limits(request: Request) -> None:
+    client_key = request.client.host if request.client else "unknown"
+    allowed = await _rate_limiter.allow(
+        client_key, settings.rate_limit_per_minute, settings.rate_limit_per_hour
+    )
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
+
+async def _require_token(authorization: str | None = Header(default=None)) -> None:
+    if not settings.api_token:
+        return
+    if authorization != f"Bearer {settings.api_token}":
+        raise HTTPException(status_code=401, detail="Invalid or missing API token")
 
 
 def _clean_text(value: object, limit: int, default: str = "") -> str:
@@ -101,7 +127,11 @@ def _clean_tier(value: object) -> str:
 
 
 @app.post("/api/check")
-async def check_claim(req: CheckRequest) -> CheckResponse:
+async def check_claim(
+    req: CheckRequest,
+    _: None = Depends(_enforce_limits),
+    __: None = Depends(_require_token),
+) -> CheckResponse:
     """Check a factual claim against curated evidence sources.
 
     Pipeline:
@@ -117,6 +147,15 @@ async def check_claim(req: CheckRequest) -> CheckResponse:
 
     # Step 1: Normalise
     normalized_claim = " ".join(req.claim.split())
+
+    cached = _response_cache.get(normalized_claim)
+    if cached is not None:
+        return CheckResponse.model_validate(cached)
+
+    def _finish(response: CheckResponse) -> CheckResponse:
+        _response_cache.set(response.normalized_claim, response.model_dump())
+        return response
+
     llm_available = settings.llm_enabled and bool(settings.bifrost_api_key)
 
     # Step 1b: Optional LLM claim normalisation for better search queries
@@ -128,7 +167,7 @@ async def check_claim(req: CheckRequest) -> CheckResponse:
             normalized = await asyncio.to_thread(normalize_claim, normalized_claim)
             if normalized.get("checkable", True) is False:
                 # LLM says this isn't a checkable factual claim
-                return CheckResponse(
+                return _finish(CheckResponse(
                     request_id=request_id,
                     claim=req.claim,
                     normalized_claim=_clean_text(normalized.get("normalized_claim"), 500, normalized_claim),
@@ -145,7 +184,7 @@ async def check_claim(req: CheckRequest) -> CheckResponse:
                     citations=[],
                     limitations=["not_checkable"],
                     policy_version="3.0",
-                )
+                ))
 
             # Use LLM-generated search queries for better results
             search_queries = _clean_queries(normalized.get("search_queries"), search_queries)
@@ -265,7 +304,7 @@ async def check_claim(req: CheckRequest) -> CheckResponse:
         if str(c.get("url") or "").startswith("http")
     ]
 
-    return CheckResponse(
+    return _finish(CheckResponse(
         request_id=request_id,
         claim=req.claim,
         normalized_claim=normalized_claim,
@@ -274,4 +313,4 @@ async def check_claim(req: CheckRequest) -> CheckResponse:
         citations=formatted_citations,
         limitations=sorted(set(limitations)),
         policy_version="3.0",
-    )
+    ))
