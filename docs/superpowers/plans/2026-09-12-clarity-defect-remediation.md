@@ -19,7 +19,8 @@
 - Extension: Chrome MV3, `minimum_chrome_version` 116, TypeScript strict, no new runtime dependencies. Manifest icons must be raster PNG.
 - Commands: backend tests `python3 -m pytest -q` from `backend/`; extension tests `npm test` from repo root; build `npm run build`.
 - Commit style: conventional commits (`fix:`, `test:`, `chore:`, `docs:`, `refactor:`).
-- Git identity is not configured globally. Every commit must prefix: `GIT_AUTHOR_NAME='Sean Lynch~' GIT_AUTHOR_EMAIL='slynch@codec.ie' GIT_COMMITTER_NAME='Sean Lynch~' GIT_COMMITTER_EMAIL='slynch@codec.ie' git commit ...` (do not change git config).
+- Git identity is set per commit via environment variables; every commit must use `Sean Lynch <sean.lynch@boanntech.com>`:
+  `GIT_AUTHOR_NAME='Sean Lynch' GIT_AUTHOR_EMAIL='sean.lynch@boanntech.com' GIT_COMMITTER_NAME='Sean Lynch' GIT_COMMITTER_EMAIL='sean.lynch@boanntech.com' git commit ...` (do not change git config).
 - Work happens on branch `fix/defect-remediation`.
 - Keep the public JSON shape stable except for the two documented removals (`page_url`, `page_title`) and removals of leaky fields (`model` in `/api/health`).
 
