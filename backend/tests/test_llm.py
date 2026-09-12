@@ -138,6 +138,46 @@ def test_synthesize_verdict_misleading_requires_conflicting_hosts(monkeypatch):
     assert result["verdict"] == "unverified"
 
 
+def test_synthesize_verdict_misleading_requires_support_and_contradiction(monkeypatch):
+    from app import llm
+
+    monkeypatch.setattr(llm, "_call_llm", lambda *a, **k: json.dumps({
+        "verdict": "misleading", "confidence": 0.8, "explanation": "mixed",
+    }))
+    result = llm.synthesize_verdict("Claim text", [
+        {"tier": "fact_check", "relation": "supports", "url": "https://reuters.com/a", "snippet": "A", "retrieval_status": "ok"},
+        {"tier": "fact_check", "relation": "supports", "url": "https://apnews.com/b", "snippet": "B", "retrieval_status": "ok"},
+    ])
+    assert result["verdict"] == "unverified"
+    assert result["confidence"] == 0.0
+
+
+def test_synthesize_verdict_misleading_treats_subdomains_as_one_publisher(monkeypatch):
+    from app import llm
+
+    monkeypatch.setattr(llm, "_call_llm", lambda *a, **k: json.dumps({
+        "verdict": "misleading", "confidence": 0.8, "explanation": "mixed",
+    }))
+    result = llm.synthesize_verdict("Claim text", [
+        {"tier": "fact_check", "relation": "supports", "url": "https://www.reuters.com/a", "snippet": "A", "retrieval_status": "ok"},
+        {"tier": "fact_check", "relation": "contradicts", "url": "https://jp.reuters.com/b", "snippet": "B", "retrieval_status": "ok"},
+    ])
+    assert result["verdict"] == "unverified"
+
+
+def test_synthesize_verdict_misleading_across_distinct_publishers(monkeypatch):
+    from app import llm
+
+    monkeypatch.setattr(llm, "_call_llm", lambda *a, **k: json.dumps({
+        "verdict": "misleading", "confidence": 0.8, "explanation": "mixed",
+    }))
+    result = llm.synthesize_verdict("Claim text", [
+        {"tier": "fact_check", "relation": "supports", "url": "https://reuters.com/a", "snippet": "A", "retrieval_status": "ok"},
+        {"tier": "fact_check", "relation": "contradicts", "url": "https://apnews.com/b", "snippet": "B", "retrieval_status": "ok"},
+    ])
+    assert result["verdict"] == "misleading"
+
+
 def test_synthesize_verdict_fallback_supported(monkeypatch):
     """LLM unavailable → deterministic fallback with qualifying sources."""
     from app import llm

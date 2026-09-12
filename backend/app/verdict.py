@@ -3,7 +3,8 @@
 Rules:
   - supported: ≥1 fetched qualifying source (primary or fact_check) supporting the claim
   - contradicted: ≥1 fetched qualifying source contradicting the claim
-  - misleading: both support and contradiction, from ≥2 distinct publisher hosts
+  - misleading: both support and contradiction, from ≥2 distinct publishers
+    (canonical curated registry domains, not raw hosts)
   - unverified: no fetched qualifying sources, or only context/unknown relations
   - not_checkable: opinion, prediction, value judgment (called by LLM in Phase 3)
 
@@ -13,7 +14,7 @@ Evidence-first invariant enforced at serialisation boundary in main.py.
 from __future__ import annotations
 
 from app.models import Assessment, Verdict
-from app.sources import url_host
+from app.sources import canonical_publisher
 
 
 def qualifying_citations(citations: list[dict]) -> list[dict]:
@@ -60,7 +61,7 @@ def calculate_verdict(
 
     supports = [c for c in qualifying if c.get("relation") == "supports"]
     contradicts = [c for c in qualifying if c.get("relation") == "contradicts"]
-    hosts = {url_host(c.get("url", "")) for c in supports + contradicts}
+    publishers = {canonical_publisher(c.get("url", "")) for c in supports + contradicts}
     primary_count = sum(1 for c in qualifying if c.get("tier") == "primary")
 
     base_confidence = min(0.5 + (len(qualifying) * 0.08), 0.92)
@@ -74,7 +75,7 @@ def calculate_verdict(
             explanation=f"Found {len(contradicts)} qualifying source(s) contradicting this claim.",
         )
     if supports and contradicts:
-        if len(hosts) >= 2:
+        if len(publishers) >= 2:
             return Assessment(
                 verdict=Verdict.misleading,
                 confidence=round(base_confidence * 0.8, 2),

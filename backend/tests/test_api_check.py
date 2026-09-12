@@ -97,3 +97,83 @@ def test_context_host_cannot_independently_support_misleading(monkeypatch):
     response = _client().post("/api/check", json={"claim": "Inflation fell to 2 percent in 2024."})
     assert response.status_code == 200
     assert response.json()["assessment"]["verdict"] == "unverified"
+
+
+def test_subdomain_citations_cannot_support_misleading(monkeypatch):
+    monkeypatch.setattr(config.settings, "bifrost_api_key", "test")
+    monkeypatch.setattr(config.settings, "llm_enabled", True)
+
+    async def retrieve(*_args, **_kwargs):
+        return [
+            {"title": "A", "publisher": "reuters.com", "url": "https://www.reuters.com/a", "snippet": "A", "tier": "fact_check", "retrieval_status": "ok", "relation": "supports"},
+            {"title": "B", "publisher": "reuters.com", "url": "https://jp.reuters.com/b", "snippet": "B", "tier": "fact_check", "retrieval_status": "ok", "relation": "contradicts"},
+            {"title": "C", "publisher": "who.int", "url": "https://who.int/c", "snippet": "C", "tier": "primary", "retrieval_status": "ok", "relation": "context"},
+        ]
+
+    monkeypatch.setattr(main, "retrieve_evidence", retrieve)
+
+    import app.llm as llm
+
+    monkeypatch.setattr(llm, "normalize_claim", lambda claim: {
+        "normalized_claim": claim, "checkable": True, "search_queries": [claim]
+    })
+    monkeypatch.setattr(llm, "synthesize_verdict", lambda claim, passages: {
+        "verdict": "misleading", "confidence": 0.8, "explanation": "mixed", "limitations": [],
+    })
+
+    response = _client().post("/api/check", json={"claim": "Inflation fell to 2 percent in 2024."})
+    assert response.status_code == 200
+    assert response.json()["assessment"]["verdict"] == "unverified"
+
+
+def test_distinct_publishers_keep_misleading_verdict(monkeypatch):
+    monkeypatch.setattr(config.settings, "bifrost_api_key", "test")
+    monkeypatch.setattr(config.settings, "llm_enabled", True)
+
+    async def retrieve(*_args, **_kwargs):
+        return [
+            {"title": "A", "publisher": "reuters.com", "url": "https://reuters.com/a", "snippet": "A", "tier": "fact_check", "retrieval_status": "ok", "relation": "supports"},
+            {"title": "B", "publisher": "apnews.com", "url": "https://apnews.com/b", "snippet": "B", "tier": "fact_check", "retrieval_status": "ok", "relation": "contradicts"},
+            {"title": "C", "publisher": "who.int", "url": "https://who.int/c", "snippet": "C", "tier": "primary", "retrieval_status": "ok", "relation": "context"},
+        ]
+
+    monkeypatch.setattr(main, "retrieve_evidence", retrieve)
+
+    import app.llm as llm
+
+    monkeypatch.setattr(llm, "normalize_claim", lambda claim: {
+        "normalized_claim": claim, "checkable": True, "search_queries": [claim]
+    })
+    monkeypatch.setattr(llm, "synthesize_verdict", lambda claim, passages: {
+        "verdict": "misleading", "confidence": 0.8, "explanation": "mixed", "limitations": [],
+    })
+
+    response = _client().post("/api/check", json={"claim": "Inflation fell to 2 percent in 2024."})
+    assert response.status_code == 200
+    assert response.json()["assessment"]["verdict"] == "misleading"
+
+
+def test_misleading_requires_support_and_contradiction_at_boundary(monkeypatch):
+    monkeypatch.setattr(config.settings, "bifrost_api_key", "test")
+    monkeypatch.setattr(config.settings, "llm_enabled", True)
+
+    async def retrieve(*_args, **_kwargs):
+        return [
+            {"title": "A", "publisher": "reuters.com", "url": "https://reuters.com/a", "snippet": "A", "tier": "fact_check", "retrieval_status": "ok", "relation": "supports"},
+            {"title": "B", "publisher": "apnews.com", "url": "https://apnews.com/b", "snippet": "B", "tier": "fact_check", "retrieval_status": "ok", "relation": "supports"},
+        ]
+
+    monkeypatch.setattr(main, "retrieve_evidence", retrieve)
+
+    import app.llm as llm
+
+    monkeypatch.setattr(llm, "normalize_claim", lambda claim: {
+        "normalized_claim": claim, "checkable": True, "search_queries": [claim]
+    })
+    monkeypatch.setattr(llm, "synthesize_verdict", lambda claim, passages: {
+        "verdict": "misleading", "confidence": 0.8, "explanation": "mixed", "limitations": [],
+    })
+
+    response = _client().post("/api/check", json={"claim": "Inflation fell to 2 percent in 2024."})
+    assert response.status_code == 200
+    assert response.json()["assessment"]["verdict"] == "unverified"

@@ -29,7 +29,7 @@ from app.models import (
     Verdict,
 )
 from app.ratelimit import SlidingWindowLimiter
-from app.sources import url_host
+from app.sources import canonical_publisher
 from app.verdict import calculate_verdict, qualifying_citations
 
 logger = logging.getLogger("clarity.api")
@@ -266,7 +266,11 @@ async def check_claim(
         qualifying = qualifying_citations(citations)
         if assessment.verdict == Verdict.misleading:
             conflicting = [c for c in qualifying if c.get("relation") in ("supports", "contradicts")]
-            if len({url_host(c.get("url", "")) for c in conflicting}) < 2:
+            publishers = {canonical_publisher(c.get("url", "")) for c in conflicting}
+            has_both_relations = any(
+                c.get("relation") == "supports" for c in conflicting
+            ) and any(c.get("relation") == "contradicts" for c in conflicting)
+            if len(publishers) < 2 or not has_both_relations:
                 qualifying = []
         if not qualifying:
             assessment = Assessment(

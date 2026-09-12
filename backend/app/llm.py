@@ -24,8 +24,8 @@ from typing import Any
 
 from app.config import settings
 from app.models import ClaimDomain
-from app.sources import url_host
-from app.verdict import calculate_verdict
+from app.sources import canonical_publisher
+from app.verdict import calculate_verdict, qualifying_citations
 
 logger = logging.getLogger("clarity.llm")
 
@@ -335,19 +335,23 @@ def synthesize_verdict(
 
         # Evidence-first invariant: if verdict is supported/contradicted/misleading
         # but there are no qualifying sources, downgrade
-        qualifying = [p for p in classified_passages if p.get("tier") in ("primary", "fact_check")]
+        qualifying = qualifying_citations(classified_passages)
         if parsed["verdict"] in ("supported", "contradicted") and not qualifying:
             parsed["verdict"] = "unverified"
             parsed["confidence"] = 0.0
             parsed["explanation"] = "The LLM assessment could not be validated against qualifying sources."
         if parsed["verdict"] == "misleading":
             conflicting = [p for p in qualifying if p.get("relation") in ("supports", "contradicts")]
-            hosts = {url_host(p.get("url", "")) for p in conflicting}
-            if len(hosts) < 2:
+            publishers = {canonical_publisher(p.get("url", "")) for p in conflicting}
+            has_both_relations = any(
+                p.get("relation") == "supports" for p in conflicting
+            ) and any(p.get("relation") == "contradicts" for p in conflicting)
+            if len(publishers) < 2 or not has_both_relations:
                 parsed["verdict"] = "unverified"
                 parsed["confidence"] = 0.0
                 parsed["explanation"] = (
-                    "A misleading verdict requires at least two independent qualifying sources."
+                    "A misleading verdict requires at least two independent qualifying "
+                    "sources with both supporting and contradicting evidence."
                 )
 
         limitations = parsed.get("limitations")

@@ -115,12 +115,50 @@ def url_host(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+def _strip_domain_prefix(host: str) -> str:
+    for prefix in DOMAIN_PREFIXES:
+        if host.startswith(prefix):
+            return host[len(prefix):]
+    return host
+
+
+def _matched_trusted_domain(host: str) -> str | None:
+    """Return the curated registry key that owns a hostname, if any.
+
+    Checks an exact match, then progressively shorter parent domains
+    (e.g. data.bls.gov → bls.gov). The matched key is the canonical
+    publisher identity used by independence checks.
+    """
+    raw = _strip_domain_prefix(host.lower())
+    if raw in TRUSTED_SOURCES:
+        return raw
+    parts = raw.split(".")
+    if len(parts) >= 2:
+        for i in range(len(parts) - 1):
+            candidate = ".".join(parts[i:])
+            if candidate in TRUSTED_SOURCES:
+                return candidate
+    return None
+
+
+def canonical_publisher(url: str) -> str:
+    """Canonical publisher identity for a citation URL.
+
+    Maps recognised hosts and subdomains to their curated registry domain
+    (jp.reuters.com → reuters.com) so subdomains of one publisher are never
+    counted as independent sources. Falls back to ``url_host`` for
+    unrecognised hosts.
+    """
+    host = url_host(url)
+    return _matched_trusted_domain(host) or host
+
+
 def classify_domain(url: str) -> SourceQuality:
     """Determine the source tier for a URL's domain.
 
     Checks:
-      1. Exact match in TRUSTED_SOURCES
-      2. Prefix variations (www.bbc.co.uk → bbc.co.uk)
+      1. Prefix variations (www.bbc.co.uk → bbc.co.uk)
+      2. Exact match in TRUSTED_SOURCES
       3. Subdomain match (sub.domain.gov.ie → matches gov.ie)
       4. Exclusion list
       5. Unknown → returns "unknown", which maps to excluded
@@ -130,28 +168,13 @@ def classify_domain(url: str) -> SourceQuality:
     parsed = urlparse(url)
     hostname = parsed.hostname or ""
 
-    # Strip leading www. etc
-    raw = hostname.lower()
-    for prefix in DOMAIN_PREFIXES:
-        if raw.startswith(prefix):
-            raw = raw[len(prefix):]
-            break
-
     # Check exclusion list
-    if raw in EXCLUDED_DOMAINS:
+    if _strip_domain_prefix(hostname.lower()) in EXCLUDED_DOMAINS:
         return SourceQuality(domain=hostname, tier="excluded", is_independent=False)
 
-    # Exact match
-    if raw in TRUSTED_SOURCES:
-        return SourceQuality(domain=hostname, tier=TRUSTED_SOURCES[raw])
-
-    # Subdomain match — try the last two segments (gov.ie, bbc.co.uk)
-    parts = raw.split(".")
-    if len(parts) >= 2:
-        for i in range(len(parts) - 1):
-            candidate = ".".join(parts[i:])
-            if candidate in TRUSTED_SOURCES:
-                return SourceQuality(domain=hostname, tier=TRUSTED_SOURCES[candidate])
+    matched = _matched_trusted_domain(hostname)
+    if matched:
+        return SourceQuality(domain=hostname, tier=TRUSTED_SOURCES[matched])
 
     # Unknown
     return SourceQuality(domain=hostname, tier="unknown")

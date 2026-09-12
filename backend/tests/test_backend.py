@@ -138,6 +138,34 @@ def test_verdict_misleading_requires_two_independent_hosts():
     assert calculate_verdict(independent).verdict == Verdict.misleading
 
 
+def test_canonical_publisher_maps_registry_subdomains():
+    from app.sources import canonical_publisher
+
+    assert canonical_publisher("https://jp.reuters.com/x") == "reuters.com"
+    assert canonical_publisher("https://www.bls.gov/x") == "bls.gov"
+    assert canonical_publisher("https://www.data.bls.gov/x") == "bls.gov"
+    assert canonical_publisher("https://data.gov.ie/x") == "gov.ie"
+    assert canonical_publisher("https://unknown.example/x") == "unknown.example"
+
+
+def test_verdict_misleading_treats_subdomains_as_one_publisher():
+    citations = [
+        {"url": "https://www.reuters.com/a", "tier": "fact_check", "snippet": "A", "retrieval_status": "ok", "relation": "supports"},
+        {"url": "https://jp.reuters.com/b", "tier": "fact_check", "snippet": "B", "retrieval_status": "ok", "relation": "contradicts"},
+        {"url": "https://who.int/c", "tier": "primary", "snippet": "C", "retrieval_status": "ok", "relation": "context"},
+    ]
+    assert calculate_verdict(citations).verdict == Verdict.unverified
+
+
+def test_verdict_misleading_across_distinct_registry_publishers():
+    citations = [
+        {"url": "https://reuters.com/a", "tier": "fact_check", "snippet": "A", "retrieval_status": "ok", "relation": "supports"},
+        {"url": "https://apnews.com/b", "tier": "fact_check", "snippet": "B", "retrieval_status": "ok", "relation": "contradicts"},
+        {"url": "https://who.int/c", "tier": "primary", "snippet": "C", "retrieval_status": "ok", "relation": "context"},
+    ]
+    assert calculate_verdict(citations).verdict == Verdict.misleading
+
+
 def test_verdict_misleading_ignores_context_citation_hosts():
     same_publisher_conflict = [
         {"url": "https://reuters.com/a", "tier": "fact_check", "snippet": "A", "retrieval_status": "ok", "relation": "supports"},
