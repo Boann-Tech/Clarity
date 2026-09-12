@@ -89,31 +89,61 @@ def test_verdict_unverified_empty():
 
 def test_verdict_secondary_only():
     citations = [
-        {"url": "https://bbc.com/news", "tier": "secondary_news", "published_date": "2026-01-01"},
-        {"url": "https://bbc.com/news/2", "tier": "secondary_news", "published_date": "2026-01-02"},
+        {
+            "url": "https://bbc.com/news",
+            "tier": "secondary_news",
+            "published_date": "2026-01-01",
+            "snippet": "BBC report.",
+            "retrieval_status": "ok",
+        },
+        {
+            "url": "https://bbc.com/news/2",
+            "tier": "secondary_news",
+            "published_date": "2026-01-02",
+            "snippet": "Follow-up report.",
+            "retrieval_status": "ok",
+        },
     ]
     assessment = calculate_verdict(citations)
     assert assessment.verdict == Verdict.unverified
     assert assessment.confidence == 0.2  # secondary only, low confidence
 
 
-def test_verdict_supported_with_primary():
-    citations = [
-        {"url": "https://who.int/doc", "tier": "primary", "published_date": "2026-01-01"},
-        {"url": "https://reuters.com/check", "tier": "fact_check", "published_date": "2026-01-02"},
-    ]
+def test_verdict_context_only_is_unverified():
+    citations = [{"url": "https://who.int/doc", "tier": "primary", "snippet": "Fact text.", "retrieval_status": "ok", "relation": "context"}]
     assessment = calculate_verdict(citations)
-    assert assessment.verdict == Verdict.supported
-    assert assessment.confidence > 0.5
+    assert assessment.verdict == Verdict.unverified
 
 
-def test_verdict_supported_single_primary():
-    citations = [
-        {"url": "https://bls.gov/data", "tier": "primary", "published_date": "2026-01-01"},
+def test_verdict_supports_requires_support_relation():
+    citations = [{"url": "https://who.int/doc", "tier": "primary", "snippet": "Fact text.", "retrieval_status": "ok", "relation": "supports"}]
+    assert calculate_verdict(citations).verdict == Verdict.supported
+
+
+def test_verdict_contradicted():
+    citations = [{"url": "https://bls.gov/data", "tier": "primary", "snippet": "Contradicts.", "retrieval_status": "ok", "relation": "contradicts"}]
+    assert calculate_verdict(citations).verdict == Verdict.contradicted
+
+
+def test_verdict_misleading_requires_two_independent_hosts():
+    same_host = [
+        {"url": "https://reuters.com/a", "tier": "fact_check", "snippet": "A", "retrieval_status": "ok", "relation": "supports"},
+        {"url": "https://reuters.com/b", "tier": "fact_check", "snippet": "B", "retrieval_status": "ok", "relation": "contradicts"},
     ]
-    assessment = calculate_verdict(citations)
-    assert assessment.verdict == Verdict.supported
-    assert assessment.confidence > 0.3
+    independent = [
+        {"url": "https://reuters.com/a", "tier": "fact_check", "snippet": "A", "retrieval_status": "ok", "relation": "supports"},
+        {"url": "https://apnews.com/b", "tier": "fact_check", "snippet": "B", "retrieval_status": "ok", "relation": "contradicts"},
+    ]
+    assert calculate_verdict(same_host).verdict == Verdict.unverified
+    assert calculate_verdict(independent).verdict == Verdict.misleading
+
+
+def test_verdict_ignores_unfetched_or_empty_citations():
+    citations = [
+        {"url": "https://who.int/doc", "tier": "primary", "snippet": "", "retrieval_status": "fetch_error", "relation": "supports"},
+        {"url": "https://reuters.com/x", "tier": "fact_check", "snippet": "  ", "retrieval_status": "ok", "relation": "supports"},
+    ]
+    assert calculate_verdict(citations).verdict == Verdict.unverified
 
 
 # ── Request validation ──

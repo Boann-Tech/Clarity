@@ -4,6 +4,8 @@ These tests verify the deterministic fallbacks (no Bifrost API key = graceful de
 With `CLARITY_BIFROST_API_KEY` and a deployed-model alias set, they also exercise the LLM path.
 """
 
+import json
+
 from app.llm import (
     _deterministic_fallback,
     classify_passages,
@@ -98,13 +100,37 @@ def test_synthesize_verdict_empty():
     assert result["confidence"] == 0.0
 
 
+def test_synthesize_verdict_json_array_falls_back(monkeypatch):
+    from app import llm
+
+    monkeypatch.setattr(llm, "_call_llm", lambda *a, **k: '["not", "a", "dict"]')
+    result = llm.synthesize_verdict("Claim text", [
+        {"tier": "primary", "relation": "supports", "url": "https://who.int/x", "text": "T", "retrieval_status": "ok"}
+    ])
+    assert result["verdict"] == "supported"
+
+
+def test_synthesize_verdict_null_limitations(monkeypatch):
+    from app import llm
+
+    monkeypatch.setattr(llm, "_call_llm", lambda *a, **k: json.dumps({
+        "verdict": "supported", "confidence": 0.9, "explanation": "ok",
+        "limitations": None, "domain": "not_a_domain",
+    }))
+    result = llm.synthesize_verdict("Claim text", [
+        {"tier": "primary", "relation": "supports", "url": "https://who.int/x", "text": "T", "retrieval_status": "ok"}
+    ])
+    assert result["limitations"] == []
+    assert result["domain"] is None
+
+
 def test_synthesize_verdict_fallback_supported(monkeypatch):
     """LLM unavailable → deterministic fallback with qualifying sources."""
     from app import llm
     monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: None)
     passages = [
-        {"tier": "primary", "relation": "context", "url": "https://who.int/doc", "text": "WHO report data."},
-        {"tier": "fact_check", "relation": "context", "url": "https://reuters.com/factcheck", "text": "Reuters confirms."},
+        {"tier": "primary", "relation": "supports", "url": "https://who.int/doc", "text": "WHO report data.", "snippet": "WHO report data."},
+        {"tier": "fact_check", "relation": "supports", "url": "https://reuters.com/factcheck", "text": "Reuters confirms.", "snippet": "Reuters confirms."},
     ]
     result = synthesize_verdict("Health claim test", passages)
     assert result["verdict"] == "supported"
@@ -143,7 +169,7 @@ def test_synthesize_verdict_fallback_contradicted(monkeypatch):
     from app import llm
     monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: None)
     passages = [
-        {"tier": "primary", "relation": "contradicts", "url": "https://bls.gov/data", "text": "BLS data contradicts claim."},
+        {"tier": "primary", "relation": "contradicts", "url": "https://bls.gov/data", "text": "BLS data contradicts claim.", "snippet": "BLS data contradicts claim."},
     ]
     result = synthesize_verdict("Economic claim test", passages)
     assert result["verdict"] == "contradicted"
@@ -154,8 +180,8 @@ def test_synthesize_verdict_fallback_mixed(monkeypatch):
     from app import llm
     monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: None)
     passages = [
-        {"tier": "primary", "relation": "supports", "url": "https://example.com/a", "text": "Supports."},
-        {"tier": "fact_check", "relation": "contradicts", "url": "https://example.com/b", "text": "Contradicts."},
+        {"tier": "primary", "relation": "supports", "url": "https://reuters.com/a", "text": "Supports.", "snippet": "Supports."},
+        {"tier": "fact_check", "relation": "contradicts", "url": "https://apnews.com/b", "text": "Contradicts.", "snippet": "Contradicts."},
     ]
     result = synthesize_verdict("Mixed claim", passages)
     assert result["verdict"] == "misleading"
@@ -166,7 +192,7 @@ def test_synthesize_verdict_fallback_secondary_only(monkeypatch):
     from app import llm
     monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: None)
     passages = [
-        {"tier": "secondary_news", "relation": "supports", "url": "https://bbc.com/news", "text": "BBC report."},
+        {"tier": "secondary_news", "relation": "supports", "url": "https://bbc.com/news", "text": "BBC report.", "snippet": "BBC report."},
     ]
     result = synthesize_verdict("News claim", passages)
     assert result["verdict"] == "unverified"
@@ -185,9 +211,9 @@ def test_deterministic_fallback_empty():
 def test_deterministic_fallback_contradicted():
     result = _deterministic_fallback(
         "test",
-        [{"tier": "primary", "relation": "contradicts"}],
+        [{"tier": "primary", "relation": "contradicts", "url": "https://bls.gov/data", "snippet": "BLS data."}],
         [],
-        [{"tier": "primary", "relation": "contradicts"}],
+        [{"tier": "primary", "relation": "contradicts", "url": "https://bls.gov/data", "snippet": "BLS data."}],
         1,
     )
     assert result["verdict"] == "contradicted"
@@ -196,8 +222,8 @@ def test_deterministic_fallback_contradicted():
 def test_deterministic_fallback_supported():
     result = _deterministic_fallback(
         "test",
-        [{"tier": "primary", "relation": "supports"}],
-        [{"tier": "primary", "relation": "supports"}],
+        [{"tier": "primary", "relation": "supports", "url": "https://who.int/x", "snippet": "WHO data."}],
+        [{"tier": "primary", "relation": "supports", "url": "https://who.int/x", "snippet": "WHO data."}],
         [],
         1,
     )

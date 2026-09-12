@@ -10,6 +10,7 @@ no verdict without at least one qualifying citation URL.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -26,7 +27,8 @@ from app.models import (
     CitationSource,
     Verdict,
 )
-from app.verdict import calculate_verdict
+from app.sources import url_host
+from app.verdict import calculate_verdict, qualifying_citations
 
 logger = logging.getLogger("clarity.api")
 
@@ -64,6 +66,40 @@ async def health():
     }
 
 
+def _clean_text(value: object, limit: int, default: str = "") -> str:
+    if isinstance(value, str):
+        text = value.strip()
+    elif value is None:
+        text = ""
+    else:
+        text = str(value).strip()
+    return (text or default)[:limit]
+
+
+def _clean_limitations(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        text = _clean_text(item, 120)
+        if text and text not in out:
+            out.append(text)
+    return out[:10]
+
+
+def _clean_queries(value: object, fallback: list[str]) -> list[str]:
+    if not isinstance(value, list):
+        return fallback
+    queries = [_clean_text(item, 300) for item in value]
+    queries = [q for q in queries if len(q) >= 3][:3]
+    return queries or fallback
+
+
+def _clean_tier(value: object) -> str:
+    tier = _clean_text(value, 32)
+    return tier if tier in {"primary", "fact_check", "secondary_news"} else "secondary_news"
+
+
 @app.post("/api/check")
 async def check_claim(req: CheckRequest) -> CheckResponse:
     """Check a factual claim against curated evidence sources.
@@ -89,19 +125,20 @@ async def check_claim(req: CheckRequest) -> CheckResponse:
         try:
             from app.llm import normalize_claim
 
-            normalized = normalize_claim(normalized_claim)
+            normalized = await asyncio.to_thread(normalize_claim, normalized_claim)
             if normalized.get("checkable", True) is False:
                 # LLM says this isn't a checkable factual claim
                 return CheckResponse(
                     request_id=request_id,
                     claim=req.claim,
-                    normalized_claim=normalized.get("normalized_claim", normalized_claim),
+                    normalized_claim=_clean_text(normalized.get("normalized_claim"), 500, normalized_claim),
                     checked_at=now,
                     assessment=Assessment(
                         verdict=Verdict.not_checkable,
                         confidence=0.0,
-                        explanation=normalized.get(
-                            "reasoning",
+                        explanation=_clean_text(
+                            normalized.get("reasoning"),
+                            600,
                             "This appears to be an opinion, prediction, or value statement, not a checkable factual claim.",
                         ),
                     ),
@@ -111,14 +148,12 @@ async def check_claim(req: CheckRequest) -> CheckResponse:
                 )
 
             # Use LLM-generated search queries for better results
-            llm_queries = normalized.get("search_queries", [])
-            if llm_queries and llm_queries[0]:
-                search_queries = llm_queries[:3]
-                logger.info(
-                    "LLM normalisation: %s → %s",
-                    normalized_claim,
-                    search_queries[0],
-                )
+            search_queries = _clean_queries(normalized.get("search_queries"), search_queries)
+            logger.info(
+                "LLM normalisation: %s → %s",
+                normalized_claim,
+                search_queries[0],
+            )
         except Exception as e:
             logger.warning("LLM normalisation failed: %s — falling back to raw claim", e)
 
@@ -162,15 +197,17 @@ async def check_claim(req: CheckRequest) -> CheckResponse:
                     "llm_confidence": c.get("llm_confidence", 0.5),
                     "reasoning": c.get("reasoning", ""),
                     "published_date": c.get("published_date"),
+                    "retrieval_status": c.get("retrieval_status", "ok"),
                 })
 
-            llm_result = synthesize_verdict(normalized_claim, classified_passages)
+            llm_result = await asyncio.to_thread(synthesize_verdict, normalized_claim, classified_passages)
             assessment = Assessment(
                 verdict=llm_result.get("verdict", "unverified"),
-                confidence=llm_result.get("confidence", 0.0),
-                explanation=llm_result.get("explanation", ""),
+                confidence=max(0.0, min(float(llm_result.get("confidence", 0.0) or 0.0), 1.0)),
+                explanation=_clean_text(llm_result.get("explanation"), 600, ""),
+                domain=llm_result.get("domain") or None,
             )
-            llm_limitations = llm_result.get("limitations", [])
+            llm_limitations = _clean_limitations(llm_result.get("limitations"))
             logger.info(
                 "LLM verdict: %s (%.2f) — %d passages",
                 assessment.verdict,
@@ -187,7 +224,9 @@ async def check_claim(req: CheckRequest) -> CheckResponse:
 
     # Step 6: Evidence-first invariant — enforce at serialisation boundary
     if assessment.verdict in (Verdict.supported, Verdict.contradicted, Verdict.misleading):
-        qualifying = [c for c in citations if c.get("tier") in ("primary", "fact_check")]
+        qualifying = qualifying_citations(citations)
+        if assessment.verdict == Verdict.misleading and len({url_host(c["url"]) for c in qualifying}) < 2:
+            qualifying = []
         if not qualifying:
             assessment = Assessment(
                 verdict=Verdict.unverified,
@@ -210,18 +249,18 @@ async def check_claim(req: CheckRequest) -> CheckResponse:
     # Format citations
     formatted_citations = [
         CitationSource(
-            title=c.get("title", "Untitled"),
-            publisher=c.get("publisher", c.get("tier", "unknown")),
-            url=c.get("url", ""),
-            published_date=c.get("published_date"),
-            accessed_at=c.get("accessed_at", now),
-            tier=c.get("tier", "unknown"),
-            snippet=c.get("snippet", "")[:800],
-            relevance_score=min(c.get("relevance_score", 0.0), 1.0),
-            retrieval_status=c.get("retrieval_status", "ok"),
+            title=_clean_text(c.get("title"), 300, "Untitled"),
+            publisher=_clean_text(c.get("publisher"), 200, _clean_tier(c.get("tier"))),
+            url=_clean_text(c.get("url"), 2048),
+            published_date=_clean_text(c.get("published_date"), 64) or None,
+            accessed_at=_clean_text(c.get("accessed_at"), 64, now),
+            tier=_clean_tier(c.get("tier")),
+            snippet=_clean_text(c.get("snippet"), 800),
+            relevance_score=max(0.0, min(float(c.get("relevance_score") or 0.0), 1.0)),
+            retrieval_status=_clean_text(c.get("retrieval_status"), 32, "ok"),
         )
         for c in citations
-        if c.get("url")
+        if str(c.get("url") or "").startswith("http")
     ]
 
     return CheckResponse(

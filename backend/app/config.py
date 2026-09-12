@@ -53,6 +53,7 @@ class Settings:
     )
     bifrost_model: str = os.getenv("CLARITY_BIFROST_MODEL", "deepseek-pro")
     llm_enabled: bool = os.getenv("CLARITY_LLM_ENABLED", "true").lower() == "true"
+    llm_timeout: int = int(os.getenv("CLARITY_LLM_TIMEOUT", "30"))
 
     # Rate limiting
     rate_limit_per_minute: int = int(os.getenv("CLARITY_RATE_LIMIT", "10"))

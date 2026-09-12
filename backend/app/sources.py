@@ -108,6 +108,13 @@ class SourceQuality:
     is_independent: bool = True
 
 
+def url_host(url: str) -> str:
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").lower()
+    return host[4:] if host.startswith("www.") else host
+
+
 def classify_domain(url: str) -> SourceQuality:
     """Determine the source tier for a URL's domain.
 
