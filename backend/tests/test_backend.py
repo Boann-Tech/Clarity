@@ -39,6 +39,24 @@ def test_classify_subdomain_match():
     assert result.tier == "primary"
 
 
+def test_classify_additional_registry_entries():
+    primary_domains = [
+        "https://www.statcan.gc.ca/x", "https://www.abs.gov.au/x",
+        "https://www.stats.govt.nz/x", "https://www.ons.gov.uk/x",
+        "https://www.ilo.org/x", "https://www.wto.org/x",
+    ]
+    fact_check_domains = [
+        "https://factcheck.afp.com/x", "https://leadstories.com/x",
+        "https://www.correctiv.org/x", "https://maldita.es/x",
+        "https://www.newtral.es/x", "https://www.boomlive.in/x",
+        "https://www.rappler.com/x",
+    ]
+    for url in primary_domains:
+        assert classify_domain(url).tier == "primary", url
+    for url in fact_check_domains:
+        assert classify_domain(url).tier == "fact_check", url
+
+
 # ── Deduplication and ranking ──
 
 
@@ -152,6 +170,31 @@ def test_verdict_misleading_treats_subdomains_as_one_publisher():
     citations = [
         {"url": "https://www.reuters.com/a", "tier": "fact_check", "snippet": "A", "retrieval_status": "ok", "relation": "supports"},
         {"url": "https://jp.reuters.com/b", "tier": "fact_check", "snippet": "B", "retrieval_status": "ok", "relation": "contradicts"},
+        {"url": "https://who.int/c", "tier": "primary", "snippet": "C", "retrieval_status": "ok", "relation": "context"},
+    ]
+    assert calculate_verdict(citations).verdict == Verdict.unverified
+
+
+def test_independence_group_collapses_common_ownership():
+    from app.sources import independence_group
+
+    # Same newsroom, two TLDs.
+    assert independence_group("https://www.bbc.co.uk/a") == independence_group("https://www.bbc.com/b")
+    # PolitiFact has been owned and operated by the Poynter Institute since 2018.
+    assert independence_group("https://politifact.com/a") == independence_group("https://poynter.org/b")
+    # Nature Portfolio and Springer are both imprints of Springer Nature.
+    assert independence_group("https://nature.com/a") == independence_group("https://springer.com/b")
+    # Unrelated curated publishers stay distinct.
+    assert independence_group("https://reuters.com/a") != independence_group("https://apnews.com/b")
+
+
+def test_verdict_misleading_treats_common_ownership_as_one_publisher():
+    """bbc.co.uk and bbc.com are the same newsroom; a conflict sourced only
+    from those two must not satisfy the 2-independent-sources requirement.
+    """
+    citations = [
+        {"url": "https://www.bbc.co.uk/a", "tier": "fact_check", "snippet": "A", "retrieval_status": "ok", "relation": "supports"},
+        {"url": "https://www.bbc.com/b", "tier": "fact_check", "snippet": "B", "retrieval_status": "ok", "relation": "contradicts"},
         {"url": "https://who.int/c", "tier": "primary", "snippet": "C", "retrieval_status": "ok", "relation": "context"},
     ]
     assert calculate_verdict(citations).verdict == Verdict.unverified

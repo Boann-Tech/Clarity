@@ -9,7 +9,7 @@
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version" />
-    <img src="https://img.shields.io/badge/tests-154%20passing-green.svg" alt="Tests" />
+    <img src="https://img.shields.io/badge/tests-182%20passing-green.svg" alt="Tests" />
     <img src="https://img.shields.io/badge/Chrome-MV3-yellow.svg" alt="MV3" />
     <img src="https://img.shields.io/badge/license-MIT-lightgrey.svg" alt="License" />
   </p>
@@ -101,10 +101,11 @@ python3.12 -m piptools compile --generate-hashes --allow-unsafe --output-file re
 - `POST /api/check` — Check a claim. Request: `{"claim": "..."}` → Response with citations and assessment
 - `POST /api/check/batch` — Check 1–10 claims in one request. Request: `{"claims": ["...", ...]}` → `{"results": [...]}` in input order; charges one rate-limit unit per uncached claim
 - `GET /api/health` — Health check
+- `GET /api/metrics` — Per-process operational counters (see [Operational metrics](#operational-metrics) below)
 
 **Search backends** — see [Retrieval providers](#retrieval-providers) above. `CLARITY_DDG_ENABLED` toggles the DuckDuckGo fallback (enabled by default).
 
-**Evidence pipeline:** Search → Fetch pages → Extract relevant passages → Classify source tier → Deduplicate and rank → the configured LLM classifies passages and synthesizes a constrained verdict
+**Evidence pipeline:** Normalize claim → LLM-generated search queries → Search each query → Merge and deduplicate candidate URLs *before* fetching (a URL surfaced by more than one generated query is fetched and classified once, not once per query) → Fetch pages → Extract relevant passages → Classify source tier → Deduplicate and rank → the configured LLM classifies passages and synthesizes a constrained verdict. The "misleading" verdict's 2-independent-sources rule also collapses citations under common ownership (e.g. bbc.co.uk/bbc.com, or PolitiFact/its owner the Poynter Institute) so they can't satisfy the requirement together.
 
 ### LLM providers
 
@@ -168,10 +169,16 @@ Models that reject `max_tokens` (some newer OpenAI models) can use `CLARITY_LLM_
 
 - **Optional bearer token:** set `CLARITY_API_TOKEN` on the backend, then paste the same value into the extension's Settings **Backend token** field. When configured, `/api/check` and `/api/check/batch` require `Authorization: Bearer <token>` and return 401 otherwise.
 - **Rate limits:** `CLARITY_RATE_LIMIT` requests per minute (default 60) and `CLARITY_RATE_LIMIT_HOUR` requests per hour (default 500), per client IP; exceeding them returns 429. Cache hits are free — only uncached claims consume units, so a first scan of a 10-claim page costs 10 units and the defaults are sized for it. The extension checks uncached claims in `POST /api/check/batch` requests of at most 10 claims each (a scan of up to 20 claims makes at most two requests, 120 s budget per batch); a batch charges one unit per uncached claim and returns 429 if it would exceed the configured limits, so no per-claim request fan-out and no partial charging.
+- **Behind a reverse proxy:** by default the client IP used for rate limiting is the direct socket peer, so a proxy in front of Clarity would make every client share one bucket (the proxy's IP). Set `CLARITY_TRUSTED_PROXY_HOPS` to the number of trusted proxies in front of Clarity (usually `1`) to read the real client IP from `X-Forwarded-For` instead. Only raise this for a header your own infrastructure sets — trusting more hops than actually exist lets a client spoof its rate-limit identity.
 - **Deploy extension and backend together:** the extension now uses `POST /api/check/batch`. A new extension pointed at a backend that predates the batch route will report an HTTP 404 error per claim and mark it Unverified — it never fabricates a verdict. Upgrade both sides together.
 - **Response cache:** `CLARITY_CACHE_TTL` seconds (default 1800) controls how long checked-claim responses are cached.
+- **Shared cache/rate-limit backend for multiple workers or replicas:** by default the cache and rate limiter are in-memory and per-process — fine for one worker, but each additional worker or replica gets its own cache (more misses) and its own rate-limit counters (the effective limit multiplies by worker count). Set `CLARITY_REDIS_URL` (e.g. `redis://localhost:6379/0`) and `pip install redis` to share both across every process instead. Optional and off by default; if the package isn't installed or the client can't be constructed, Clarity logs a warning and falls back to the in-memory backends rather than failing to start. A Redis outage fails the rate limiter open (not closed) and the cache to a miss — availability over strict enforcement.
 - **No baked secrets:** `backend/.dockerignore` excludes `.env`; pass it at runtime with `docker run --env-file backend/.env`.
 - **Network egress guard with a known residual:** fetches are allowlisted to curated registry domains and every redirect hop is re-validated against the same rules. DNS rebinding between that validation and httpx's own resolution is a known TOCTOU residual — run the backend on a trusted network and add transport-level IP pinning before exposing it to untrusted networks.
+
+### Operational metrics
+
+`GET /api/metrics` reports per-process counters: cache hit/miss, verdict distribution, rate-limit rejections, and LLM call counts + average latency by role (`normalize`, `classify`, `verdict`). Unauthenticated by default, matching `/api/health`; like the in-memory cache and rate limiter, counters are per-process and reset on restart — scrape each replica separately for a fleet-wide view. Firewall it separately from `/api/health` if you'd rather not expose call-volume counts publicly.
 
 ## Architecture
 
@@ -204,7 +211,7 @@ npm run build     # → dist/
 # Backend tests:
 cd backend
 pip install -r requirements-dev.txt
-python3 -m pytest -q    # 134 tests — backend
+python3 -m pytest -q    # 162 tests — backend
 ```
 
 Then load in Chrome:

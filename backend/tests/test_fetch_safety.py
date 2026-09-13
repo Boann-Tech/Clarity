@@ -120,3 +120,52 @@ def test_retrieve_evidence_drops_failed_fetches(monkeypatch):
     monkeypatch.setattr(evidence, "search_evidence", fake_search)
     monkeypatch.setattr(evidence, "fetch_page", fake_fetch)
     assert _run(evidence.retrieve_evidence("A claim long enough to check.")) == []
+
+
+def test_retrieve_evidence_multi_fetches_overlapping_url_once(monkeypatch):
+    """Two LLM-generated queries surfacing the same URL must fetch and
+    classify it once, not once per query.
+    """
+    search_calls = []
+    fetch_calls = []
+    classify_calls = []
+
+    async def fake_search(query, max_results=15):
+        search_calls.append(query)
+        # Every query happens to surface the same Reuters URL, plus one
+        # query-specific AP URL.
+        return [
+            {"title": "Shared", "url": "https://www.reuters.com/shared", "snippet": "", "source": "ddg"},
+            {"title": f"Unique {query}", "url": f"https://apnews.com/{query}", "snippet": "", "source": "ddg"},
+        ]
+
+    async def fake_fetch(url):
+        fetch_calls.append(url)
+        return evidence.FetchedPage(
+            html="<article>Evidence text that directly supports the claim under test.</article>",
+            final_url=url,
+        )
+
+    def fake_classify_passages(_claim, passages):
+        classify_calls.append(len(passages))
+        return [{"index": p["index"], "relation": "context", "llm_confidence": 0.5, "reasoning": ""} for p in passages]
+
+    monkeypatch.setattr(evidence, "search_evidence", fake_search)
+    monkeypatch.setattr(evidence, "fetch_page", fake_fetch)
+    monkeypatch.setattr("app.llm.classify_passages", fake_classify_passages)
+
+    citations = _run(evidence.retrieve_evidence_multi(
+        "Original claim text.",
+        ["query one", "query two", "query one"],  # exact dupes are also deduped up front
+        use_llm=True,
+    ))
+
+    assert search_calls == ["query one", "query two"]
+    assert sorted(fetch_calls) == [
+        "https://apnews.com/query one",
+        "https://apnews.com/query two",
+        "https://www.reuters.com/shared",
+    ]
+    # One classify_passages call across all merged sources, not one per query.
+    assert classify_calls == [3]
+    assert sorted(c["url"] for c in citations) == sorted(fetch_calls)

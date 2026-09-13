@@ -16,12 +16,58 @@ def _offline_and_reset(monkeypatch):
     async def no_evidence(*_args, **_kwargs):
         return []
 
-    monkeypatch.setattr(main, "retrieve_evidence", no_evidence)
+    monkeypatch.setattr(main, "retrieve_evidence_multi", no_evidence)
     main._rate_limiter.reset()
     main._response_cache.clear()
     yield
     main._rate_limiter.reset()
     main._response_cache.clear()
+
+
+class _FakeClient:
+    def __init__(self, host):
+        self.host = host
+
+
+class _FakeRequest:
+    def __init__(self, host, headers=None):
+        self.client = _FakeClient(host) if host else None
+        self.headers = headers or {}
+
+
+def test_client_ip_ignores_forwarded_header_by_default(monkeypatch):
+    from app.main import _client_ip
+
+    monkeypatch.setattr(config.settings, "trusted_proxy_hops", 0)
+    request = _FakeRequest("203.0.113.9", {"x-forwarded-for": "198.51.100.1"})
+    assert _client_ip(request) == "203.0.113.9"
+
+
+def test_client_ip_uses_forwarded_header_when_trusted(monkeypatch):
+    from app.main import _client_ip
+
+    monkeypatch.setattr(config.settings, "trusted_proxy_hops", 1)
+    # A client can put anything in a self-sent X-Forwarded-For ("6.6.6.6");
+    # our single trusted proxy (nginx) appends the real peer IP it saw to
+    # the end of the header, so with 1 trusted hop the rightmost entry is
+    # the one to trust.
+    request = _FakeRequest("10.0.0.5", {"x-forwarded-for": "6.6.6.6, 203.0.113.7"})
+    assert _client_ip(request) == "203.0.113.7"
+
+
+def test_client_ip_falls_back_when_header_missing_expected_hops(monkeypatch):
+    from app.main import _client_ip
+
+    monkeypatch.setattr(config.settings, "trusted_proxy_hops", 3)
+    request = _FakeRequest("10.0.0.5", {"x-forwarded-for": "198.51.100.1, 10.0.0.5"})
+    assert _client_ip(request) == "10.0.0.5"
+
+
+def test_client_ip_handles_missing_client(monkeypatch):
+    from app.main import _client_ip
+
+    monkeypatch.setattr(config.settings, "trusted_proxy_hops", 0)
+    assert _client_ip(_FakeRequest(None)) == "unknown"
 
 
 def test_rate_limit_returns_429(monkeypatch):
@@ -99,6 +145,42 @@ def test_health_reports_enabled_llm(llm_enabled):
     assert "gateway" not in body
 
 
+def test_metrics_tracks_cache_hit_and_miss(monkeypatch):
+    monkeypatch.setattr(config.settings, "cache_ttl_seconds", 60)
+    monkeypatch.setattr(config.settings, "api_token", None)
+    client = TestClient(app)
+    payload = {"claim": "Inflation fell to 2 percent in 2024."}
+
+    client.post("/api/check", json=payload)  # miss
+    client.post("/api/check", json=payload)  # hit
+
+    body = client.get("/api/metrics").json()
+    assert body["counters"]["cache_miss"] == 1
+    assert body["counters"]["cache_hit"] == 1
+
+
+def test_metrics_tracks_verdict_distribution(monkeypatch):
+    monkeypatch.setattr(config.settings, "api_token", None)
+    client = TestClient(app)
+    client.post("/api/check", json={"claim": "Inflation fell to 2 percent in 2024."})
+
+    body = client.get("/api/metrics").json()
+    # No LLM, no evidence (stubbed by the module fixture) → deterministic unverified.
+    assert body["counters"]["verdict:unverified"] == 1
+
+
+def test_metrics_tracks_rate_limited_requests(monkeypatch):
+    monkeypatch.setattr(config.settings, "rate_limit_per_minute", 1)
+    monkeypatch.setattr(config.settings, "rate_limit_per_hour", 100)
+    monkeypatch.setattr(config.settings, "api_token", None)
+    client = TestClient(app)
+    client.post("/api/check", json={"claim": "Inflation fell to 2 percent in 2024."})
+    client.post("/api/check", json={"claim": "Unemployment rose to 9 percent in 2024."})
+
+    body = client.get("/api/metrics").json()
+    assert body["counters"]["rate_limited"] == 1
+
+
 def test_cache_returns_same_request_id(monkeypatch):
     monkeypatch.setattr(config.settings, "cache_ttl_seconds", 60)
     monkeypatch.setattr(config.settings, "api_token", None)
@@ -111,11 +193,11 @@ def test_cache_returns_same_request_id(monkeypatch):
 
 def test_response_cache_expires_and_bounds():
     cache = ResponseCache(max_entries=2)
-    cache.set("a", {"v": 1})
-    assert cache.get("a") == {"v": 1}
-    cache.set("b", {"v": 2})
-    cache.set("c", {"v": 3})
-    assert cache.get("a") is None
+    asyncio.run(cache.set("a", {"v": 1}))
+    assert asyncio.run(cache.get("a")) == {"v": 1}
+    asyncio.run(cache.set("b", {"v": 2}))
+    asyncio.run(cache.set("c", {"v": 3}))
+    assert asyncio.run(cache.get("a")) is None
 
 
 def test_not_checkable_cache_hit_uses_canonical_key(monkeypatch, llm_enabled):
@@ -160,7 +242,7 @@ def test_cache_hit_skips_evidence_retrieval(monkeypatch, llm_enabled):
         calls["retrieve"] += 1
         return []
 
-    monkeypatch.setattr(main, "retrieve_evidence", counting_retrieve)
+    monkeypatch.setattr(main, "retrieve_evidence_multi", counting_retrieve)
 
     import app.llm as llm
 

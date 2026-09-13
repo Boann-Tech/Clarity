@@ -84,6 +84,39 @@ TRUSTED_SOURCES: dict[str, str] = {
     "thejournal.ie": "secondary_news",
     "rte.ie": "secondary_news",
     "independent.ie": "secondary_news",
+    # Additional government statistics agencies (primary)
+    "statcan.gc.ca": "primary",
+    "abs.gov.au": "primary",
+    "stats.govt.nz": "primary",
+    "ons.gov.uk": "primary",
+    "ilo.org": "primary",
+    "wto.org": "primary",
+    # Additional fact-check organisations (IFCN-affiliated)
+    "factcheck.afp.com": "fact_check",
+    "leadstories.com": "fact_check",
+    "correctiv.org": "fact_check",
+    "maldita.es": "fact_check",
+    "newtral.es": "fact_check",
+    "boomlive.in": "fact_check",
+    "rappler.com": "fact_check",
+}
+
+# ── Ownership groups ──
+# Two curated domains under common ownership must never count as two
+# *independent* sources, even though each is individually trustworthy and
+# each keeps its own tier above. `deduplicate_and_rank` and citation display
+# still treat them as distinct publishers; only the "misleading requires 2+
+# independent sources" check collapses them.
+OWNER_GROUPS: dict[str, str] = {
+    # BBC operates bbc.co.uk (UK) and bbc.com (international) as one newsroom.
+    "bbc.co.uk": "bbc",
+    "bbc.com": "bbc",
+    # PolitiFact has been owned and operated by the Poynter Institute since 2018.
+    "politifact.com": "poynter_institute",
+    "poynter.org": "poynter_institute",
+    # Nature Portfolio and Springer are both imprints of Springer Nature.
+    "nature.com": "springer_nature",
+    "springer.com": "springer_nature",
 }
 
 # Domains that are NEVER acceptable as evidence
@@ -151,6 +184,21 @@ def canonical_publisher(url: str) -> str:
     """
     host = url_host(url)
     return _matched_trusted_domain(host) or host
+
+
+def independence_group(url: str) -> str:
+    """Ownership group used for *independence* checks (e.g. the "misleading
+    requires 2+ independent sources" rule).
+
+    This differs from `canonical_publisher` — which is what gets displayed
+    as a citation's publisher — by additionally collapsing distinct curated
+    domains that share an owner (see `OWNER_GROUPS`), such as bbc.co.uk and
+    bbc.com, or politifact.com and its owner poynter.org. Two citations from
+    the same group never count as independent of each other, even when
+    they're on different curated domains.
+    """
+    publisher = canonical_publisher(url)
+    return OWNER_GROUPS.get(publisher, publisher)
 
 
 def classify_domain(url: str) -> SourceQuality:

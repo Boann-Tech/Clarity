@@ -165,6 +165,23 @@ def test_synthesize_verdict_misleading_treats_subdomains_as_one_publisher(monkey
     assert result["verdict"] == "unverified"
 
 
+def test_synthesize_verdict_misleading_treats_common_ownership_as_one_publisher(monkeypatch):
+    """PolitiFact has been owned and operated by the Poynter Institute since
+    2018; a conflict sourced only from those two must not satisfy the
+    2-independent-sources requirement.
+    """
+    from app import llm
+
+    monkeypatch.setattr(llm, "_call_llm", lambda *a, **k: json.dumps({
+        "verdict": "misleading", "confidence": 0.8, "explanation": "mixed",
+    }))
+    result = llm.synthesize_verdict("Claim text", [
+        {"tier": "fact_check", "relation": "supports", "url": "https://politifact.com/a", "snippet": "A", "retrieval_status": "ok"},
+        {"tier": "fact_check", "relation": "contradicts", "url": "https://poynter.org/b", "snippet": "B", "retrieval_status": "ok"},
+    ])
+    assert result["verdict"] == "unverified"
+
+
 def test_synthesize_verdict_misleading_across_distinct_publishers(monkeypatch):
     from app import llm
 
@@ -344,3 +361,62 @@ def test_call_llm_uses_configured_client_and_token_param(monkeypatch):
     assert create_kwargs["model"] == "m"
     assert create_kwargs["max_completion_tokens"] == 123
     assert "max_tokens" not in create_kwargs
+
+
+def test_call_llm_records_metrics_by_role(monkeypatch):
+    from app import llm, providers
+    from app.metrics import metrics
+
+    metrics.reset()
+    config = providers.LLMConfig(
+        enabled=True, provider="custom", base_url="http://llm.test/v1", api_key="k",
+        model="m", extra_headers={}, max_tokens_param="max_tokens", timeout=5,
+    )
+    monkeypatch.setattr(providers, "_llm_config", config)
+
+    class FakeCompletions:
+        def create(self, **_kwargs):
+            message = type("Message", (), {"content": "{}"})()
+            choice = type("Choice", (), {"message": message})()
+            return type("Response", (), {"choices": [choice]})()
+
+    class FakeClient:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr("openai.OpenAI", lambda **_kwargs: FakeClient())
+
+    llm._call_llm("system", "user", role="classify")
+
+    snapshot = metrics.snapshot()
+    assert snapshot["llm"]["classify"]["ok"] == 1
+    assert snapshot["llm"]["classify"]["error"] == 0
+    assert snapshot["llm"]["classify"]["avg_latency_seconds"] >= 0.0
+
+
+def test_call_llm_records_error_metric_on_failure(monkeypatch):
+    from app import llm, providers
+    from app.metrics import metrics
+
+    metrics.reset()
+    config = providers.LLMConfig(
+        enabled=True, provider="custom", base_url="http://llm.test/v1", api_key="k",
+        model="m", extra_headers={}, max_tokens_param="max_tokens", timeout=5,
+    )
+    monkeypatch.setattr(providers, "_llm_config", config)
+
+    class FakeCompletions:
+        def create(self, **_kwargs):
+            raise RuntimeError("boom")
+
+    class FakeClient:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr("openai.OpenAI", lambda **_kwargs: FakeClient())
+
+    assert llm._call_llm("system", "user", role="verdict") is None
+
+    snapshot = metrics.snapshot()
+    assert snapshot["llm"]["verdict"]["ok"] == 0
+    assert snapshot["llm"]["verdict"]["error"] == 1

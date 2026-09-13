@@ -8,7 +8,7 @@ def _client():
     return TestClient(app, raise_server_exceptions=False)
 
 
-async def _fake_retrieve(claim, max_sources=8, use_llm=False):
+async def _fake_retrieve(*_args, **_kwargs):
     return [{
         "title": "Reuters fact check",
         "publisher": "reuters.com",
@@ -38,7 +38,7 @@ def test_batch_preserves_order_and_charges_uncached(monkeypatch, llm_enabled):
     monkeypatch.setattr(config.settings, "rate_limit_per_hour", 100)
     monkeypatch.setattr(config.settings, "api_token", None)
     monkeypatch.setattr(config.settings, "cache_ttl_seconds", 60)
-    monkeypatch.setattr(main, "retrieve_evidence", _fake_retrieve)
+    monkeypatch.setattr(main, "retrieve_evidence_multi", _fake_retrieve)
     _stub_llm(monkeypatch)
 
     claims = [
@@ -64,7 +64,7 @@ def test_batch_cache_hits_are_free_and_skip_retrieval(monkeypatch, llm_enabled):
         calls["retrieve"] += 1
         return []
 
-    monkeypatch.setattr(main, "retrieve_evidence", counting_retrieve)
+    monkeypatch.setattr(main, "retrieve_evidence_multi", counting_retrieve)
     _stub_llm(monkeypatch)
 
     payload = {"claims": ["Inflation fell to 2 percent in 2024."]}
@@ -88,7 +88,7 @@ def test_batch_deduplicates_repeated_claim_and_charges_once(monkeypatch, llm_ena
         calls["retrieve"] += 1
         return await _fake_retrieve(*_args, **_kwargs)
 
-    monkeypatch.setattr(main, "retrieve_evidence", counting_retrieve)
+    monkeypatch.setattr(main, "retrieve_evidence_multi", counting_retrieve)
     _stub_llm(monkeypatch)
 
     claim = "Inflation fell to 2 percent in 2024."
@@ -105,7 +105,7 @@ def test_batch_over_budget_returns_429(monkeypatch, llm_enabled):
     monkeypatch.setattr(config.settings, "rate_limit_per_minute", 2)
     monkeypatch.setattr(config.settings, "rate_limit_per_hour", 100)
     monkeypatch.setattr(config.settings, "api_token", None)
-    monkeypatch.setattr(main, "retrieve_evidence", _fake_retrieve)
+    monkeypatch.setattr(main, "retrieve_evidence_multi", _fake_retrieve)
     _stub_llm(monkeypatch)
 
     payload = {"claims": [

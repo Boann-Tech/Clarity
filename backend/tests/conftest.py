@@ -23,13 +23,16 @@ def _llm_stub(enabled: bool) -> LLMConfig:
 @pytest.fixture(autouse=True)
 def _reset_api_state(monkeypatch):
     from app import main, providers
+    from app.metrics import metrics
 
     monkeypatch.setattr(providers, "_llm_config", _llm_stub(enabled=False))
     main._rate_limiter.reset()
     main._response_cache.clear()
+    metrics.reset()
     yield
     main._rate_limiter.reset()
     main._response_cache.clear()
+    metrics.reset()
 
 
 @pytest.fixture

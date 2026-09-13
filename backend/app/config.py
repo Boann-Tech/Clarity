@@ -68,6 +68,28 @@ class Settings:
     rate_limit_per_minute: int = int(os.getenv("CLARITY_RATE_LIMIT", "60"))
     rate_limit_per_hour: int = int(os.getenv("CLARITY_RATE_LIMIT_HOUR", "500"))
 
+    # Trusted reverse-proxy hops for client-IP resolution. 0 (default) means
+    # the direct socket peer is used and any X-Forwarded-For header is
+    # ignored — safe for a direct-exposed backend, but wrong behind a proxy,
+    # where every client would share the proxy's IP and its rate-limit
+    # bucket. Set to the number of trusted proxies in front of Clarity (e.g.
+    # 1 for a single nginx/Cloudflare hop) to read the real client IP from
+    # X-Forwarded-For instead. Only raise this for a header your own
+    # infrastructure sets — a client can put anything in that header, so
+    # trusting more hops than actually exist lets a client spoof its IP.
+    trusted_proxy_hops: int = _positive_int_env("CLARITY_TRUSTED_PROXY_HOPS", 0)
+
+    # Optional shared cache/rate-limit backend for multi-process or
+    # multi-replica deployments (e.g. "redis://localhost:6379/0"). Unset
+    # means each process keeps its own in-memory cache and rate-limit
+    # counters — fine for a single worker, but a cache miss and a fresh
+    # rate-limit bucket on every other worker/replica once you scale out.
+    # Requires the optional `redis` package (`pip install redis`); if it
+    # isn't installed, or the client can't be constructed, Clarity logs a
+    # warning and falls back to the in-memory backends rather than failing
+    # to start.
+    redis_url: str | None = os.getenv("CLARITY_REDIS_URL")
+
     # Cache
     cache_ttl_seconds: int = int(os.getenv("CLARITY_CACHE_TTL", "1800"))
 

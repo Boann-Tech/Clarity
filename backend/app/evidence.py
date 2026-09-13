@@ -536,11 +536,8 @@ def estimate_publish_date(html: str) -> str | None:
 PASSAGE_MIN_CHARS = 40
 
 
-async def retrieve_evidence(claim: str, max_sources: int = 8, use_llm: bool = False) -> list[dict]:
-    search_results = await search_evidence(claim, max_results=15)
-    if not search_results:
-        return []
-
+def _curate_search_results(search_results: list[dict]) -> list[dict]:
+    """Dedupe by URL and keep only curated-tier candidates, in order."""
     curated: list[dict] = []
     seen_urls: set[str] = set()
     for result in search_results:
@@ -551,9 +548,13 @@ async def retrieve_evidence(claim: str, max_sources: int = 8, use_llm: bool = Fa
         if classify_domain(url).tier not in CURATED_TIERS:
             continue
         curated.append(result)
-    if not curated:
-        return []
+    return curated
 
+
+async def _fetch_and_rank(claim: str, curated: list[dict], max_sources: int) -> list[dict]:
+    """Fetch each curated candidate once, score its most relevant passage
+    against `claim`, and return the results ranked by source quality.
+    """
     semaphore = asyncio.Semaphore(4)
 
     async def build_source(result: dict) -> dict | None:
@@ -580,9 +581,15 @@ async def retrieve_evidence(claim: str, max_sources: int = 8, use_llm: bool = Fa
     raw_sources = [source for source in built if source is not None]
     if not raw_sources:
         return []
+    return deduplicate_and_rank(raw_sources)
 
-    ranked = deduplicate_and_rank(raw_sources)
 
+async def _classify_and_format(
+    claim: str, ranked: list[dict], use_llm: bool, max_sources: int
+) -> list[dict]:
+    """Optionally LLM-classify each ranked source once against `claim`, then
+    shape the public citation dicts.
+    """
     if use_llm and ranked:
         try:
             from app.llm import classify_passages
@@ -626,3 +633,56 @@ async def retrieve_evidence(claim: str, max_sources: int = 8, use_llm: bool = Fa
         }
         for src in ranked[:max_sources]
     ]
+
+
+async def retrieve_evidence(claim: str, max_sources: int = 8, use_llm: bool = False) -> list[dict]:
+    search_results = await search_evidence(claim, max_results=15)
+    if not search_results:
+        return []
+    curated = _curate_search_results(search_results)
+    if not curated:
+        return []
+    ranked = await _fetch_and_rank(claim, curated, max_sources)
+    if not ranked:
+        return []
+    return await _classify_and_format(claim, ranked, use_llm, max_sources)
+
+
+async def retrieve_evidence_multi(
+    claim: str,
+    search_queries: list[str],
+    max_sources: int = 8,
+    use_llm: bool = False,
+) -> list[dict]:
+    """Retrieve evidence for one claim across several search queries,
+    fetching and classifying each candidate URL only once.
+
+    `search_queries` typically comes from `app.llm.normalize_claim`: 2-3
+    keyword-optimised variants of the same claim. Calling `retrieve_evidence`
+    once per query and merging citations afterwards — the original approach —
+    fetches and LLM-classifies the same URL again every time a different
+    query happens to surface it too. This merges and dedupes candidate URLs
+    *before* fetching, so overlap between queries costs nothing extra, and it
+    scores/classifies every passage against the original claim text rather
+    than a keyword-optimised sub-query.
+    """
+    queries = list(dict.fromkeys(q.strip() for q in search_queries if q and q.strip())) or [claim]
+
+    search_result_lists = await asyncio.gather(
+        *(search_evidence(query, max_results=15) for query in queries),
+        return_exceptions=True,
+    )
+    merged: list[dict] = []
+    for result_list in search_result_lists:
+        if isinstance(result_list, list):
+            merged.extend(result_list)
+    if not merged:
+        return []
+
+    curated = _curate_search_results(merged)
+    if not curated:
+        return []
+    ranked = await _fetch_and_rank(claim, curated, max_sources)
+    if not ranked:
+        return []
+    return await _classify_and_format(claim, ranked, use_llm, max_sources)

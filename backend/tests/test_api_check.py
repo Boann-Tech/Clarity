@@ -8,24 +8,22 @@ def _client():
     return TestClient(app, raise_server_exceptions=False)
 
 
-def _fake_retrieve(claim, max_sources=8, use_llm=False):
-    async def _inner(*_args, **_kwargs):
-        return [{
-            "title": "Reuters fact check",
-            "publisher": "reuters.com",
-            "url": "https://reuters.com/x",
-            "snippet": "Passage text.",
-            "tier": "fact_check",
-            "accessed_at": "2024-01-01T00:00:00Z",
-            "relevance_score": 1.0,
-            "retrieval_status": "ok",
-            "relation": "supports",
-        }]
-    return _inner()
+async def _fake_retrieve(*_args, **_kwargs):
+    return [{
+        "title": "Reuters fact check",
+        "publisher": "reuters.com",
+        "url": "https://reuters.com/x",
+        "snippet": "Passage text.",
+        "tier": "fact_check",
+        "accessed_at": "2024-01-01T00:00:00Z",
+        "relevance_score": 1.0,
+        "retrieval_status": "ok",
+        "relation": "supports",
+    }]
 
 
 def test_null_limitations_does_not_500(monkeypatch, llm_enabled):
-    monkeypatch.setattr(main, "retrieve_evidence", _fake_retrieve)
+    monkeypatch.setattr(main, "retrieve_evidence_multi", _fake_retrieve)
 
     import app.llm as llm
 
@@ -49,7 +47,7 @@ def test_null_snippet_and_long_title_are_coerced(monkeypatch, llm_enabled):
             "tier": "fact_check", "retrieval_status": "ok", "relation": "supports",
         }]
 
-    monkeypatch.setattr(main, "retrieve_evidence", retrieve)
+    monkeypatch.setattr(main, "retrieve_evidence_multi", retrieve)
 
     import app.llm as llm
 
@@ -75,7 +73,7 @@ def test_context_host_cannot_independently_support_misleading(monkeypatch, llm_e
             {"title": "C", "publisher": "who.int", "url": "https://who.int/c", "snippet": "C", "tier": "primary", "retrieval_status": "ok", "relation": "context"},
         ]
 
-    monkeypatch.setattr(main, "retrieve_evidence", retrieve)
+    monkeypatch.setattr(main, "retrieve_evidence_multi", retrieve)
 
     import app.llm as llm
 
@@ -99,7 +97,7 @@ def test_subdomain_citations_cannot_support_misleading(monkeypatch, llm_enabled)
             {"title": "C", "publisher": "who.int", "url": "https://who.int/c", "snippet": "C", "tier": "primary", "retrieval_status": "ok", "relation": "context"},
         ]
 
-    monkeypatch.setattr(main, "retrieve_evidence", retrieve)
+    monkeypatch.setattr(main, "retrieve_evidence_multi", retrieve)
 
     import app.llm as llm
 
@@ -123,7 +121,7 @@ def test_distinct_publishers_keep_misleading_verdict(monkeypatch, llm_enabled):
             {"title": "C", "publisher": "who.int", "url": "https://who.int/c", "snippet": "C", "tier": "primary", "retrieval_status": "ok", "relation": "context"},
         ]
 
-    monkeypatch.setattr(main, "retrieve_evidence", retrieve)
+    monkeypatch.setattr(main, "retrieve_evidence_multi", retrieve)
 
     import app.llm as llm
 
@@ -146,7 +144,7 @@ def test_misleading_requires_support_and_contradiction_at_boundary(monkeypatch, 
             {"title": "B", "publisher": "apnews.com", "url": "https://apnews.com/b", "snippet": "B", "tier": "fact_check", "retrieval_status": "ok", "relation": "supports"},
         ]
 
-    monkeypatch.setattr(main, "retrieve_evidence", retrieve)
+    monkeypatch.setattr(main, "retrieve_evidence_multi", retrieve)
 
     import app.llm as llm
 

@@ -14,7 +14,7 @@ Evidence-first invariant enforced at serialisation boundary in main.py.
 from __future__ import annotations
 
 from app.models import Assessment, Verdict
-from app.sources import canonical_publisher
+from app.sources import independence_group
 
 
 def qualifying_citations(citations: list[dict]) -> list[dict]:
@@ -61,7 +61,7 @@ def calculate_verdict(
 
     supports = [c for c in qualifying if c.get("relation") == "supports"]
     contradicts = [c for c in qualifying if c.get("relation") == "contradicts"]
-    publishers = {canonical_publisher(c.get("url", "")) for c in supports + contradicts}
+    publishers = {independence_group(c.get("url", "")) for c in supports + contradicts}
     primary_count = sum(1 for c in qualifying if c.get("tier") == "primary")
 
     base_confidence = min(0.5 + (len(qualifying) * 0.08), 0.92)

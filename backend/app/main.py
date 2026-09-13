@@ -18,9 +18,10 @@ from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.cache import ResponseCache
+from app.cache import build_response_cache
 from app.config import settings
-from app.evidence import retrieve_evidence
+from app.evidence import retrieve_evidence_multi
+from app.metrics import metrics
 from app.models import (
     Assessment,
     BatchCheckRequest,
@@ -31,8 +32,8 @@ from app.models import (
     Verdict,
 )
 from app.providers import get_llm_config
-from app.ratelimit import SlidingWindowLimiter
-from app.sources import canonical_publisher
+from app.ratelimit import build_rate_limiter
+from app.sources import independence_group
 from app.verdict import calculate_verdict, qualifying_citations
 
 logger = logging.getLogger("clarity.api")
@@ -46,8 +47,8 @@ app = FastAPI(
 
 # ── Module state ──
 
-_rate_limiter = SlidingWindowLimiter()
-_response_cache = ResponseCache()
+_rate_limiter = build_rate_limiter()
+_response_cache = build_response_cache()
 
 # ── CORS ──
 
@@ -80,12 +81,39 @@ async def health():
     }
 
 
+@app.get("/api/metrics")
+async def get_metrics():
+    """Per-process operational counters: cache hit rate, verdict
+    distribution, rate-limit rejections, and LLM call counts/latency by
+    role. Not shared across workers/replicas — see app.metrics.
+    """
+    return metrics.snapshot()
+
+
+def _client_ip(request: Request) -> str:
+    """Resolve the rate-limit key for a request's real client IP.
+
+    Ignores X-Forwarded-For unless `CLARITY_TRUSTED_PROXY_HOPS` says how many
+    trusted proxies sit in front of Clarity — trusting a client-supplied
+    header by default would let any client spoof its rate-limit identity.
+    """
+    hops = settings.trusted_proxy_hops
+    if hops > 0:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            chain = [ip.strip() for ip in forwarded.split(",") if ip.strip()]
+            if len(chain) >= hops:
+                return chain[-hops]
+    return request.client.host if request.client else "unknown"
+
+
 async def _enforce_limits(request: Request, count: int = 1) -> None:
-    client_key = request.client.host if request.client else "unknown"
+    client_key = _client_ip(request)
     allowed = await _rate_limiter.allow_many(
         client_key, count, settings.rate_limit_per_minute, settings.rate_limit_per_hour
     )
     if not allowed:
+        metrics.incr("rate_limited", count)
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
 
 
@@ -165,7 +193,8 @@ async def _check_normalized(
                     limitations=["not_checkable"],
                     policy_version="3.0",
                 )
-                _response_cache.set(normalized_claim, response.model_dump())
+                metrics.incr("verdict:not_checkable")
+                await _response_cache.set(normalized_claim, response.model_dump())
                 return response
 
             # Use LLM-generated search queries for better results
@@ -178,21 +207,15 @@ async def _check_normalized(
         except Exception as e:
             logger.warning("LLM normalisation failed: %s — falling back to raw claim", e)
 
-    # Step 2-4: Retrieve evidence with optional LLM passage classification
-    all_citations = []
-    for query in search_queries:
-        batch = await retrieve_evidence(query, max_sources=settings.max_sources_per_claim, use_llm=llm_available)
-        all_citations.extend(batch)
-
-    # Deduplicate across queries
-    seen_urls = set()
-    citations = []
-    for c in all_citations:
-        url = c.get("url", "")
-        if url in seen_urls:
-            continue
-        seen_urls.add(url)
-        citations.append(c)
+    # Step 2-4: Retrieve evidence across every generated query, fetching and
+    # LLM-classifying each candidate URL only once even when more than one
+    # query surfaces it.
+    citations = await retrieve_evidence_multi(
+        normalized_claim,
+        search_queries,
+        max_sources=settings.max_sources_per_claim,
+        use_llm=llm_available,
+    )
 
     # Sources marked irrelevant by the LLM evidence classifier must never
     # be rendered as citations, even if a prior process was running older code.
@@ -248,7 +271,7 @@ async def _check_normalized(
         qualifying = qualifying_citations(citations)
         if assessment.verdict == Verdict.misleading:
             conflicting = [c for c in qualifying if c.get("relation") in ("supports", "contradicts")]
-            publishers = {canonical_publisher(c.get("url", "")) for c in conflicting}
+            publishers = {independence_group(c.get("url", "")) for c in conflicting}
             has_both_relations = any(
                 c.get("relation") == "supports" for c in conflicting
             ) and any(c.get("relation") == "contradicts" for c in conflicting)
@@ -263,6 +286,8 @@ async def _check_normalized(
                     "authoritative source requirements."
                 ),
             )
+
+    metrics.incr(f"verdict:{assessment.verdict.value}")
 
     # Build limitations
     limitations = []
@@ -300,7 +325,7 @@ async def _check_normalized(
         limitations=sorted(set(limitations)),
         policy_version="3.0",
     )
-    _response_cache.set(normalized_claim, response.model_dump())
+    await _response_cache.set(normalized_claim, response.model_dump())
     return response
 
 
@@ -324,9 +349,11 @@ async def check_claim(
     now = datetime.now(timezone.utc).isoformat()
     normalized_claim = " ".join(req.claim.split())
 
-    cached = _response_cache.get(normalized_claim)
+    cached = await _response_cache.get(normalized_claim)
     if cached is not None:
+        metrics.incr("cache_hit")
         return CheckResponse.model_validate(cached)
+    metrics.incr("cache_miss")
 
     await _enforce_limits(request, 1)
     return await _check_normalized(req, normalized_claim, get_llm_config().enabled, request_id, now)
@@ -345,10 +372,12 @@ async def check_batch(
     results: list[CheckResponse | None] = [None] * len(req.claims)
     pending: dict[str, list[int]] = {}
     for index, claim in enumerate(req.claims):
-        cached = _response_cache.get(claim)
+        cached = await _response_cache.get(claim)
         if cached is not None:
+            metrics.incr("cache_hit")
             results[index] = CheckResponse.model_validate(cached)
         else:
+            metrics.incr("cache_miss")
             pending.setdefault(claim, []).append(index)
 
     await _enforce_limits(request, len(pending))

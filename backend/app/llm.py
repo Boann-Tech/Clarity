@@ -20,11 +20,13 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
+from app.metrics import metrics
 from app.models import ClaimDomain
 from app.providers import get_llm_config
-from app.sources import canonical_publisher
+from app.sources import independence_group
 from app.verdict import calculate_verdict, qualifying_citations
 
 logger = logging.getLogger("clarity.llm")
@@ -63,10 +65,12 @@ def _call_llm(
     temperature: float = 0.1,
     max_tokens: int = 1024,
     json_mode: bool = True,
+    role: str = "unknown",
 ) -> str | None:
     """Call the configured provider model and return response text.
 
-    Returns None on any failure (caller handles fallback).
+    Returns None on any failure (caller handles fallback). `role` identifies
+    the calling stage (normalize/classify/verdict) for `/api/metrics`.
     """
     client = _build_client()
     if client is None:
@@ -93,9 +97,11 @@ def _call_llm(
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 
+    started = time.monotonic()
     try:
         resp = client.chat.completions.create(**kwargs)
         logger.info("LLM response received: model=%s", config.model)
+        metrics.observe_llm_call(role, time.monotonic() - started, ok=True)
         return resp.choices[0].message.content
     except Exception as first_error:
         # The provider may not expose response_format.
@@ -105,11 +111,14 @@ def _call_llm(
             try:
                 kwargs.pop("response_format", None)
                 resp = client.chat.completions.create(**kwargs)
+                metrics.observe_llm_call(role, time.monotonic() - started, ok=True)
                 return resp.choices[0].message.content
             except Exception as retry_error:
                 logger.warning("LLM call failed after JSON-mode retry: %s", retry_error)
+                metrics.observe_llm_call(role, time.monotonic() - started, ok=False)
                 return None
         logger.warning("LLM call failed: %s", first_error)
+        metrics.observe_llm_call(role, time.monotonic() - started, ok=False)
         return None
 
 
@@ -139,7 +148,7 @@ def normalize_claim(claim: str) -> dict[str, Any]:
         "search_queries": [claim],
     }
 
-    content = _call_llm(NORMALIZE_SYSTEM_PROMPT, claim, max_tokens=512)
+    content = _call_llm(NORMALIZE_SYSTEM_PROMPT, claim, max_tokens=512, role="normalize")
     if not content:
         return default
 
@@ -194,7 +203,7 @@ def classify_passages(
 
     user_prompt = f"Claim: {claim}\n\nRetrieved passages:\n{_format_passages(passages_text)}\n\nFor each passage, return its index, relation (supports/contradicts/context/irrelevant), confidence (0-1), and one-sentence reasoning."
 
-    content = _call_llm(CLASSIFY_SYSTEM_PROMPT, user_prompt, max_tokens=2048)
+    content = _call_llm(CLASSIFY_SYSTEM_PROMPT, user_prompt, max_tokens=2048, role="classify")
     if not content:
         # Fallback: mark all as context
         for i, p in enumerate(passages):
@@ -310,7 +319,7 @@ def synthesize_verdict(
 
     user_prompt = f"Claim: {claim}\n\nClassified evidence passages:\n{_format_passages(passages_summary)}\n\nProduce a verdict assessment."
 
-    content = _call_llm(VERDICT_SYSTEM_PROMPT, user_prompt, max_tokens=1024, temperature=0.2)
+    content = _call_llm(VERDICT_SYSTEM_PROMPT, user_prompt, max_tokens=1024, temperature=0.2, role="verdict")
     if not content:
         return _deterministic_fallback(claim, classified_passages, supported, contradicted, primary_count)
 
@@ -345,7 +354,7 @@ def synthesize_verdict(
             parsed["explanation"] = "The LLM assessment could not be validated against qualifying sources."
         if parsed["verdict"] == "misleading":
             conflicting = [p for p in qualifying if p.get("relation") in ("supports", "contradicts")]
-            publishers = {canonical_publisher(p.get("url", "")) for p in conflicting}
+            publishers = {independence_group(p.get("url", "")) for p in conflicting}
             has_both_relations = any(
                 p.get("relation") == "supports" for p in conflicting
             ) and any(p.get("relation") == "contradicts" for p in conflicting)
