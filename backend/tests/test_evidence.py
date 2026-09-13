@@ -50,7 +50,7 @@ def test_bing_rss_parses_search_items():
       <link>https://www.bls.gov/cpi/</link>
       <description>Official BLS CPI statistics</description>
     </item></channel></rss>"""
-    response = MockResponse(200, content=xml, url="https://www.bing.com/search")
+    response = MockResponse(200, content=xml, url="https://www.bing.com/news/search")
 
     with patch("app.evidence.httpx.AsyncClient", return_value=MockClient(response)):
         results = asyncio.run(search_bing_rss("US CPI", 10))
@@ -61,6 +61,27 @@ def test_bing_rss_parses_search_items():
         "snippet": "Official BLS CPI statistics",
         "source": "bing_rss",
     }]
+
+
+def test_bing_rss_unwraps_apiclick_redirect_links():
+    """Bing News RSS wraps every item in an apiclick.aspx tracking redirect;
+    the real publisher URL must be extracted before domain classification.
+    """
+    wrapped = (
+        "http://www.bing.com/news/apiclick.aspx?ref=FexRss&amp;aid=&amp;tid=abc123"
+        "&amp;url=https%3a%2f%2fwww.bls.gov%2fcpi%2f&amp;c=1&amp;mkt=en-us"
+    )
+    xml = f"""<?xml version='1.0'?><rss><channel><item>
+      <title>Consumer Price Index</title>
+      <link>{wrapped}</link>
+      <description>Official BLS CPI statistics</description>
+    </item></channel></rss>""".encode()
+    response = MockResponse(200, content=xml, url="https://www.bing.com/news/search")
+
+    with patch("app.evidence.httpx.AsyncClient", return_value=MockClient(response)):
+        results = asyncio.run(search_bing_rss("US CPI", 10))
+
+    assert results[0]["url"] == "https://www.bls.gov/cpi/"
 
 
 def test_fetch_page_accepts_large_primary_source_html(monkeypatch):

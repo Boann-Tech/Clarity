@@ -84,17 +84,35 @@ async def search_ddg(query: str, max_results: int = 10) -> list[dict]:
     return parse_ddg_results(resp.text, max_results)
 
 
-async def search_bing_rss(query: str, max_results: int = 10) -> list[dict]:
-    """Search Bing's RSS endpoint as a no-key fallback.
+def _unwrap_bing_news_link(link: str) -> str:
+    """Bing News RSS wraps each item in an apiclick.aspx tracking redirect
+    with the real destination in its `url` query param. Unwrap it so
+    downstream domain classification sees the actual publisher, not bing.com.
+    """
+    parsed = urlparse(link)
+    if parsed.netloc.endswith("bing.com"):
+        target = parse_qs(parsed.query).get("url")
+        if target:
+            return target[0]
+    return link
 
-    This is deliberately a fallback, not an evidence source. Returned URLs
-    still pass through Clarity's trusted-domain allowlist before display.
+
+async def search_bing_rss(query: str, max_results: int = 10) -> list[dict]:
+    """Search Bing News's RSS endpoint as a no-key fallback.
+
+    Bing's classic `/search?format=rss` web-search RSS feed has been
+    decommissioned — Microsoft now serves an unrelated generic content feed
+    at that URL, dynamically retitled with the query but not actually driven
+    by it. `/news/search?format=RSS` is still live and query-relevant, so
+    that's what this hits. It is deliberately a fallback, not a primary
+    evidence source: news-only coverage, and returned URLs still pass through
+    Clarity's trusted-domain allowlist before anything is fetched or cited.
     """
     try:
         async with httpx.AsyncClient(timeout=settings.fetch_timeout) as client:
             response = await client.get(
-                "https://www.bing.com/search",
-                params={"format": "rss", "q": query},
+                "https://www.bing.com/news/search",
+                params={"format": "RSS", "q": query},
                 headers={"User-Agent": settings.user_agent},
             )
             response.raise_for_status()
@@ -106,7 +124,7 @@ async def search_bing_rss(query: str, max_results: int = 10) -> list[dict]:
 
     results = []
     for item in root.findall(".//item"):
-        link = (item.findtext("link") or "").strip()
+        link = _unwrap_bing_news_link((item.findtext("link") or "").strip())
         title = (item.findtext("title") or "").strip()
         snippet = (item.findtext("description") or "").strip()
         if link and title:
