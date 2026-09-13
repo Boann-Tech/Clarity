@@ -325,11 +325,13 @@ class FakePool:
         self.responses = list(responses)
         self.requested = []
         self.headers_seen = []
+        self.extensions_seen = []
         self.closed = False
 
-    def stream(self, _method, url, headers=None):
+    def stream(self, _method, url, headers=None, extensions=None):
         self.requested.append(str(url))
         self.headers_seen.append(dict(headers or {}))
+        self.extensions_seen.append(dict(extensions or {}))
         return self.responses.pop(0)
 
     async def aclose(self):
@@ -386,7 +388,9 @@ def _decode_body(body: bytes, headers: dict[str, str]) -> str:
 
 async def _request(pool, url: str, headers: dict[str, str], max_bytes: int):
     """One validated hop. Returns (status, headers, body_or_None)."""
-    async with pool.stream("GET", url, headers=headers) as response:
+    timeout = settings.fetch_timeout
+    extensions = {"timeout": {"connect": timeout, "read": timeout, "write": timeout, "pool": timeout}}
+    async with pool.stream("GET", url, headers=headers, extensions=extensions) as response:
         status = response.status
         response_headers = {
             key.decode("latin-1").lower(): value.decode("latin-1")
@@ -466,6 +470,7 @@ def test_fetch_page_accepts_large_primary_source_html(monkeypatch):
 
     assert fetched is not None
     assert "CPI evidence" in fetched.html
+    assert pool.extensions_seen[0]["timeout"]["connect"] == evidence.settings.fetch_timeout
 
 
 def test_fetch_page_retries_curated_source_with_browser_user_agent(monkeypatch):
@@ -1213,4 +1218,5 @@ git commit -m "feat: check claims in one batch request from the extension"
 - Task ordering: Tasks 1–2 (fetch path), 3 (build), 4 (limiter), 5 (batch), 6 (extension). Task 4 touches `main.py` before Task 5 extracts the pipeline; Task 5 therefore performs the extraction against the post-Task-4 file.
 - Known risk: Task 3's `npm audit` and `pip-audit` steps can fail on advisories; the plan mandates recording exact findings rather than silently dropping the steps.
 - Known risk: pip-compile under Python 3.14 may resolve differently than 3.12; `--python-version 3.12` is mandatory, and failures are reported, not hand-waved.
+- Ruling (discovered in Task 1): httpcore has no default timeouts, unlike the replaced httpx client. `_request` therefore passes `extensions={"timeout": {"connect"/"read"/"write"/"pool": settings.fetch_timeout}}` on every hop, and `FakePool` captures extensions so the wiring is asserted in the large-primary-source test.
 - Test counts will change; the implementer records actual totals and Task 6 updates README counts if the badge/quickstart become stale.
