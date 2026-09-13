@@ -76,6 +76,31 @@ def test_batch_cache_hits_are_free_and_skip_retrieval(monkeypatch, llm_enabled):
     assert calls["retrieve"] == 1
 
 
+def test_batch_deduplicates_repeated_claim_and_charges_once(monkeypatch, llm_enabled):
+    monkeypatch.setattr(config.settings, "rate_limit_per_minute", 1)
+    monkeypatch.setattr(config.settings, "rate_limit_per_hour", 100)
+    monkeypatch.setattr(config.settings, "api_token", None)
+    monkeypatch.setattr(config.settings, "cache_ttl_seconds", 60)
+
+    calls = {"retrieve": 0}
+
+    async def counting_retrieve(*_args, **_kwargs):
+        calls["retrieve"] += 1
+        return await _fake_retrieve(*_args, **_kwargs)
+
+    monkeypatch.setattr(main, "retrieve_evidence", counting_retrieve)
+    _stub_llm(monkeypatch)
+
+    claim = "Inflation fell to 2 percent in 2024."
+    response = _client().post("/api/check/batch", json={"claims": [claim, claim]})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [result["claim"] for result in body["results"]] == [claim, claim]
+    assert body["results"][0] == body["results"][1]
+    assert calls["retrieve"] == 1
+
+
 def test_batch_over_budget_returns_429(monkeypatch, llm_enabled):
     monkeypatch.setattr(config.settings, "rate_limit_per_minute", 2)
     monkeypatch.setattr(config.settings, "rate_limit_per_hour", 100)

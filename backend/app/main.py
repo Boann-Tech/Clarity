@@ -343,24 +343,26 @@ async def check_batch(
     llm_available = get_llm_config().enabled
 
     results: list[CheckResponse | None] = [None] * len(req.claims)
-    pending: list[tuple[int, str]] = []
+    pending: dict[str, list[int]] = {}
     for index, claim in enumerate(req.claims):
         cached = _response_cache.get(claim)
         if cached is not None:
             results[index] = CheckResponse.model_validate(cached)
         else:
-            pending.append((index, claim))
+            pending.setdefault(claim, []).append(index)
 
     await _enforce_limits(request, len(pending))
 
     semaphore = asyncio.Semaphore(3)
 
-    async def run(index: int, claim: str) -> None:
+    async def run(claim: str, indices: list[int]) -> None:
         async with semaphore:
             single = CheckRequest(claim=claim)
-            results[index] = await _check_normalized(
+            result = await _check_normalized(
                 single, claim, llm_available, str(uuid.uuid4()), now
             )
+            for index in indices:
+                results[index] = result
 
-    await asyncio.gather(*(run(index, claim) for index, claim in pending))
+    await asyncio.gather(*(run(claim, indices) for claim, indices in pending.items()))
     return BatchCheckResponse(request_id=request_id, results=[r for r in results if r is not None])
