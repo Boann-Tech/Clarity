@@ -78,10 +78,10 @@ async def health():
     }
 
 
-async def _enforce_limits(request: Request) -> None:
+async def _enforce_limits(request: Request, count: int = 1) -> None:
     client_key = request.client.host if request.client else "unknown"
-    allowed = await _rate_limiter.allow(
-        client_key, settings.rate_limit_per_minute, settings.rate_limit_per_hour
+    allowed = await _rate_limiter.allow_many(
+        client_key, count, settings.rate_limit_per_minute, settings.rate_limit_per_hour
     )
     if not allowed:
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
@@ -131,7 +131,7 @@ def _clean_tier(value: object) -> str:
 @app.post("/api/check")
 async def check_claim(
     req: CheckRequest,
-    _: None = Depends(_enforce_limits),
+    request: Request,
     __: None = Depends(_require_token),
 ) -> CheckResponse:
     """Check a factual claim against curated evidence sources.
@@ -157,6 +157,8 @@ async def check_claim(
     def _finish(response: CheckResponse) -> CheckResponse:
         _response_cache.set(normalized_claim, response.model_dump())
         return response
+
+    await _enforce_limits(request, 1)
 
     llm_available = get_llm_config().enabled
 

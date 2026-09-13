@@ -20,27 +20,33 @@ class SlidingWindowLimiter:
                 break
             self._events.popitem(last=False)
 
-    async def allow(self, key: str, per_minute: int, per_hour: int) -> bool:
+    async def allow_many(self, key: str, count: int, per_minute: int, per_hour: int) -> bool:
+        """Check capacity for `count` events and append them atomically."""
+        if count <= 0:
+            return True
         now = time.monotonic()
         async with self._lock:
             self._evict_stale(now)
             events = self._events.get(key)
             if events is None:
                 events = deque()
+                if len(self._events) >= self.max_keys:
+                    self._events.popitem(last=False)
                 self._events[key] = events
             else:
                 self._events.move_to_end(key)
             while events and now - events[0] > 3600:
                 events.popleft()
             minute_count = sum(1 for ts in events if now - ts <= 60)
-            if minute_count >= per_minute or len(events) >= per_hour:
+            if minute_count + count > per_minute or len(events) + count > per_hour:
                 if not events:
                     self._events.pop(key, None)
                 return False
-            events.append(now)
-            if len(self._events) > self.max_keys:
-                self._events.popitem(last=False)
+            events.extend([now] * count)
             return True
+
+    async def allow(self, key: str, per_minute: int, per_hour: int) -> bool:
+        return await self.allow_many(key, 1, per_minute, per_hour)
 
     def reset(self) -> None:
         self._events.clear()

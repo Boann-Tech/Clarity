@@ -29,9 +29,48 @@ def test_rate_limit_returns_429(monkeypatch):
     monkeypatch.setattr(config.settings, "rate_limit_per_hour", 100)
     monkeypatch.setattr(config.settings, "api_token", None)
     client = TestClient(app)
+    first = {"claim": "Inflation fell to 2 percent in 2024."}
+    second = {"claim": "Unemployment rose to 9 percent in 2024."}
+    assert client.post("/api/check", json=first).status_code == 200
+    assert client.post("/api/check", json=second).status_code == 429
+
+
+def test_cache_hit_does_not_consume_rate_limit(monkeypatch):
+    monkeypatch.setattr(config.settings, "rate_limit_per_minute", 1)
+    monkeypatch.setattr(config.settings, "rate_limit_per_hour", 100)
+    monkeypatch.setattr(config.settings, "api_token", None)
+    client = TestClient(app)
     payload = {"claim": "Inflation fell to 2 percent in 2024."}
     assert client.post("/api/check", json=payload).status_code == 200
-    assert client.post("/api/check", json=payload).status_code == 429
+    assert client.post("/api/check", json=payload).status_code == 200
+    assert client.post("/api/check", json=payload).status_code == 200
+
+
+def test_rejected_request_does_not_consume(monkeypatch):
+    from app import main
+
+    monkeypatch.setattr(config.settings, "rate_limit_per_minute", 1)
+    monkeypatch.setattr(config.settings, "rate_limit_per_hour", 100)
+    monkeypatch.setattr(config.settings, "api_token", None)
+    client = TestClient(app)
+    assert client.post("/api/check", json={"claim": "Inflation fell to 2 percent in 2024."}).status_code == 200
+    assert client.post("/api/check", json={"claim": "Unemployment rose to 9 percent in 2024."}).status_code == 429
+    events = sum(len(queue) for queue in main._rate_limiter._events.values())
+    assert events == 1
+
+
+def test_allow_many_is_atomic():
+    from app.ratelimit import SlidingWindowLimiter
+
+    limiter = SlidingWindowLimiter()
+
+    async def run():
+        assert await limiter.allow_many("k", 3, 10, 100) is True
+        assert await limiter.allow_many("k", 8, 10, 100) is False
+        assert await limiter.allow_many("k", 0, 10, 100) is True
+        return len(limiter._events["k"])
+
+    assert asyncio.run(run()) == 3
 
 
 def test_api_token_enforced_when_configured(monkeypatch):

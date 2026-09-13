@@ -65,8 +65,8 @@ class Settings:
     llm_timeout: int = _positive_int_env("CLARITY_LLM_TIMEOUT", 30)
 
     # Rate limiting
-    rate_limit_per_minute: int = int(os.getenv("CLARITY_RATE_LIMIT", "10"))
-    rate_limit_per_hour: int = int(os.getenv("CLARITY_RATE_LIMIT_HOUR", "50"))
+    rate_limit_per_minute: int = int(os.getenv("CLARITY_RATE_LIMIT", "60"))
+    rate_limit_per_hour: int = int(os.getenv("CLARITY_RATE_LIMIT_HOUR", "500"))
 
     # Cache
     cache_ttl_seconds: int = int(os.getenv("CLARITY_CACHE_TTL", "1800"))

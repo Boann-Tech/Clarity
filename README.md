@@ -166,7 +166,7 @@ Models that reject `max_tokens` (some newer OpenAI models) can use `CLARITY_LLM_
 ### API security
 
 - **Optional bearer token:** set `CLARITY_API_TOKEN` on the backend, then paste the same value into the extension's Settings **Backend token** field. When configured, `/api/check` requires `Authorization: Bearer <token>` and returns 401 otherwise.
-- **Rate limits:** `CLARITY_RATE_LIMIT` requests per minute (default 10) and `CLARITY_RATE_LIMIT_HOUR` requests per hour (default 50), per client IP; exceeding them returns 429.
+- **Rate limits:** `CLARITY_RATE_LIMIT` requests per minute (default 60) and `CLARITY_RATE_LIMIT_HOUR` requests per hour (default 500), per client IP; exceeding them returns 429. Cache hits are free — only uncached claims consume units, so a first scan of a 10-claim page costs 10 units and the defaults are sized for it.
 - **Response cache:** `CLARITY_CACHE_TTL` seconds (default 1800) controls how long checked-claim responses are cached.
 - **No baked secrets:** `backend/.dockerignore` excludes `.env`; pass it at runtime with `docker run --env-file backend/.env`.
 - **Network egress guard with a known residual:** fetches are allowlisted to curated registry domains and every redirect hop is re-validated against the same rules. DNS rebinding between that validation and httpx's own resolution is a known TOCTOU residual — run the backend on a trusted network and add transport-level IP pinning before exposing it to untrusted networks.
