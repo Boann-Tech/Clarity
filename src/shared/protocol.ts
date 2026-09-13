@@ -256,3 +256,43 @@ export async function testBackendConnection(url: string, token: string): Promise
     return false
   }
 }
+
+/* ───────── Batch claim-check contract (extension → backend) ───────── */
+
+export interface BatchCheckResponse {
+  results: Array<{
+    claim?: string
+    assessment?: { verdict?: string; confidence?: number; explanation?: string }
+    citations?: Array<Record<string, unknown>>
+    checked_at?: string
+  }>
+}
+
+/**
+ * Check up to ten claims in a single backend request.
+ *
+ * Returns the batch results in input order, an `{ error }` marker for a
+ * non-ok HTTP response, or null when the backend could not be reached.
+ * A single 120 s budget covers the whole batch; callers must not fan out
+ * per-claim requests.
+ */
+export async function fetchBatchAssessments(
+  claims: string[],
+  settings: AppSettings,
+  fetchFn: typeof fetch = fetch,
+): Promise<BatchCheckResponse | { error: string } | null> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" }
+  if (settings.backendToken) headers.Authorization = `Bearer ${settings.backendToken}`
+  try {
+    const response = await fetchFn(`${normalizeBackendUrl(settings.backendUrl)}/api/check/batch`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ claims }),
+      signal: AbortSignal.timeout(120000),
+    })
+    if (!response.ok) return { error: `HTTP ${response.status}` }
+    return await response.json() as BatchCheckResponse
+  } catch {
+    return null
+  }
+}

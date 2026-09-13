@@ -17,6 +17,7 @@ import {
   DEFAULT_SETTINGS,
   assessmentFromResponse,
   extractCandidates,
+  fetchBatchAssessments,
   mapTier,
   resolveSettings,
   selectCheckableClaims,
@@ -25,13 +26,6 @@ import {
 /* ───────── Configuration ───────── */
 
 const SETTINGS_KEY = "clarity_settings"
-
-type BackendCheckResponse = {
-  claim?: string
-  assessment?: { verdict?: string; confidence?: number; explanation?: string }
-  citations?: Array<Record<string, unknown>>
-  checked_at?: string
-}
 
 async function getSettings(): Promise<AppSettings> {
   try {
@@ -106,85 +100,64 @@ async function getPagePayloadForTab(tabId: number): Promise<PagePayload> {
 
 async function handlePageCheck(payload: PagePayload, maxClaims = 10): Promise<{ claims: ClaimCheck[]; error?: string }> {
   const candidates = extractCandidates(payload)
-  const checkableClaims = selectCheckableClaims(candidates, Math.min(Math.max(maxClaims, 1), 20))
+  const limit = Math.min(Math.max(maxClaims, 1), 20)
+  const checkableClaims = selectCheckableClaims(candidates, limit)
 
   if (checkableClaims.length === 0) {
     return { claims: [] }
   }
 
-  const results = await Promise.all(
-    checkableClaims.map((claim) => verifySingleClaim(claim)),
-  )
-
-  return { claims: results }
-}
-
-async function verifySingleClaim(claimText: string): Promise<ClaimCheck> {
-  // 1. Check cache
-  const cached = claimCache.get(claimText)
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-    return cached.result
-  }
-
-  // 2. Run evidence search via backend
-  const outcome = await searchEvidence(claimText)
-
-  // 3. Preserve the backend's evidence-guarded assessment verbatim. The
-  // extension may add UI safeguards, but must never rewrite a contradiction
-  // into "supported" merely because citations exist.
-  let raw: { claim: string; verdict: string; confidence: number; explanation: string; citations: Citation[]; checkedAt: string }
-
-  if (outcome && "error" in outcome) {
-    raw = {
-      claim: claimText,
-      verdict: "unverified",
-      confidence: 0,
-      explanation: `The Clarity backend rejected the request (${outcome.error}). Check the backend URL/token in Settings.`,
-      citations: [],
-      checkedAt: new Date().toISOString(),
-    }
-  } else if (!outcome) {
-    raw = { claim: claimText, verdict: "unverified", confidence: 0, explanation: "Offline — the Clarity backend could not be reached. Check your connection or backend URL in Settings.", citations: [], checkedAt: new Date().toISOString() }
-  } else {
-    raw = {
-      claim: String(outcome.claim ?? claimText),
-      verdict: String(outcome.assessment?.verdict ?? "unverified"),
-      confidence: Number(outcome.assessment?.confidence ?? 0),
-      explanation: String(outcome.assessment?.explanation ?? "No validated citations could be retrieved for this claim."),
-      citations: mapBackendCitations(outcome.citations ?? []),
-      checkedAt: String(outcome.checked_at ?? new Date().toISOString()),
+  const resolved = new Map<string, ClaimCheck>()
+  const pending: string[] = []
+  for (const claim of checkableClaims) {
+    const cached = claimCache.get(claim)
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      resolved.set(claim, cached.result)
+    } else {
+      pending.push(claim)
     }
   }
 
-  const result = assessmentFromResponse(raw)
+  if (pending.length > 0) {
+    const settings = await getSettings()
+    const outcome = await fetchBatchAssessments(pending, settings)
+    if (outcome && "results" in outcome) {
+      pending.forEach((claim, index) => {
+        const raw = outcome.results[index]
+        const result = assessmentFromResponse({
+          claim: String(raw?.claim ?? claim),
+          verdict: String(raw?.assessment?.verdict ?? "unverified"),
+          confidence: Number(raw?.assessment?.confidence ?? 0),
+          explanation: String(raw?.assessment?.explanation ?? "No validated citations could be retrieved for this claim."),
+          citations: mapBackendCitations(raw?.citations ?? []),
+          checkedAt: String(raw?.checked_at ?? new Date().toISOString()),
+        })
+        claimCache.set(claim, { result, timestamp: Date.now() })
+        resolved.set(claim, result)
+      })
+    } else {
+      const explanation = outcome && "error" in outcome
+        ? `The Clarity backend rejected the request (${outcome.error}). Check the backend URL/token in Settings.`
+        : "Offline — the Clarity backend could not be reached. Check your connection or backend URL in Settings."
+      for (const claim of pending) {
+        const result = assessmentFromResponse({
+          claim,
+          verdict: "unverified",
+          confidence: 0,
+          explanation,
+          citations: [],
+          checkedAt: new Date().toISOString(),
+        })
+        claimCache.set(claim, { result, timestamp: Date.now() })
+        resolved.set(claim, result)
+      }
+    }
+  }
 
-  // 4. Cache
-  claimCache.set(claimText, { result, timestamp: Date.now() })
-
-  return result
+  return { claims: checkableClaims.map((claim) => resolved.get(claim)!) }
 }
 
 /* ───────── Evidence retrieval via backend API ───────── */
-
-type SearchOutcome = BackendCheckResponse | { error: string } | null
-
-async function searchEvidence(claimText: string): Promise<SearchOutcome> {
-  const settings = await getSettings()
-  const headers: Record<string, string> = { "Content-Type": "application/json" }
-  if (settings.backendToken) headers.Authorization = `Bearer ${settings.backendToken}`
-  try {
-    const response = await fetch(`${settings.backendUrl}/api/check`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ claim: claimText }),
-      signal: AbortSignal.timeout(60000),
-    })
-    if (!response.ok) return { error: `HTTP ${response.status}` }
-    return await response.json() as BackendCheckResponse
-  } catch {
-    return null
-  }
-}
 
 function mapBackendCitations(backendCitations: Array<Record<string, unknown>>): Citation[] {
   return backendCitations

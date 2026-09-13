@@ -9,7 +9,7 @@
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version" />
-    <img src="https://img.shields.io/badge/tests-127%20passing-green.svg" alt="Tests" />
+    <img src="https://img.shields.io/badge/tests-153%20passing-green.svg" alt="Tests" />
     <img src="https://img.shields.io/badge/Chrome-MV3-yellow.svg" alt="MV3" />
     <img src="https://img.shields.io/badge/license-MIT-lightgrey.svg" alt="License" />
   </p>
@@ -99,6 +99,7 @@ python3.12 -m piptools compile --generate-hashes --allow-unsafe --output-file re
 
 **Endpoints:**
 - `POST /api/check` — Check a claim. Request: `{"claim": "..."}` → Response with citations and assessment
+- `POST /api/check/batch` — Check 1–10 claims in one request. Request: `{"claims": ["...", ...]}` → `{"results": [...]}` in input order; charges one rate-limit unit per uncached claim
 - `GET /api/health` — Health check
 
 **Search backends** — see [Retrieval providers](#retrieval-providers) above. `CLARITY_DDG_ENABLED` toggles the DuckDuckGo fallback (enabled by default).
@@ -165,8 +166,9 @@ Models that reject `max_tokens` (some newer OpenAI models) can use `CLARITY_LLM_
 
 ### API security
 
-- **Optional bearer token:** set `CLARITY_API_TOKEN` on the backend, then paste the same value into the extension's Settings **Backend token** field. When configured, `/api/check` requires `Authorization: Bearer <token>` and returns 401 otherwise.
-- **Rate limits:** `CLARITY_RATE_LIMIT` requests per minute (default 60) and `CLARITY_RATE_LIMIT_HOUR` requests per hour (default 500), per client IP; exceeding them returns 429. Cache hits are free — only uncached claims consume units, so a first scan of a 10-claim page costs 10 units and the defaults are sized for it.
+- **Optional bearer token:** set `CLARITY_API_TOKEN` on the backend, then paste the same value into the extension's Settings **Backend token** field. When configured, `/api/check` and `/api/check/batch` require `Authorization: Bearer <token>` and return 401 otherwise.
+- **Rate limits:** `CLARITY_RATE_LIMIT` requests per minute (default 60) and `CLARITY_RATE_LIMIT_HOUR` requests per hour (default 500), per client IP; exceeding them returns 429. Cache hits are free — only uncached claims consume units, so a first scan of a 10-claim page costs 10 units and the defaults are sized for it. The extension checks every uncached claim from a scan in a single `POST /api/check/batch` request (1–10 claims, 120 s budget); a batch charges one unit per uncached claim and returns 429 if it would exceed the configured limits, so no per-claim request fan-out and no partial charging.
+- **Deploy extension and backend together:** the extension now uses `POST /api/check/batch`. A new extension pointed at a backend that predates the batch route will report an HTTP 404 error per claim and mark it Unverified — it never fabricates a verdict. Upgrade both sides together.
 - **Response cache:** `CLARITY_CACHE_TTL` seconds (default 1800) controls how long checked-claim responses are cached.
 - **No baked secrets:** `backend/.dockerignore` excludes `.env`; pass it at runtime with `docker run --env-file backend/.env`.
 - **Network egress guard with a known residual:** fetches are allowlisted to curated registry domains and every redirect hop is re-validated against the same rules. DNS rebinding between that validation and httpx's own resolution is a known TOCTOU residual — run the backend on a trusted network and add transport-level IP pinning before exposing it to untrusted networks.
@@ -196,13 +198,13 @@ Key design decisions:
 git clone https://github.com/boanntech/clarity
 cd clarity
 npm install
-npm test          # 16 tests — extension, runs in ~175ms
+npm test          # 19 tests — extension, runs in ~180ms
 npm run build     # → dist/
 
 # Backend tests:
 cd backend
 pip install -r requirements-dev.txt
-python3 -m pytest -q    # 111 tests — backend
+python3 -m pytest -q    # 134 tests — backend
 ```
 
 Then load in Chrome:
