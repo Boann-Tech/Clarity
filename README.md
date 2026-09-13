@@ -87,6 +87,16 @@ docker run --env-file backend/.env -p 8080:8080 clarity-backend
 
 `backend/.dockerignore` excludes `.env`, so credentials are passed at runtime with `--env-file` and are never baked into the image.
 
+**Locked dependencies:** `requirements.in` and `requirements-dev.in` hold top-level dependencies; `requirements.txt` and `requirements-dev.txt` are hash-pinned locks generated with pip-tools. After editing a `.in` file, regenerate under Python 3.12 (the lock target; pip-compile resolves against the interpreter it runs on, and current pip-tools has no `--python-version` flag):
+
+```bash
+cd backend
+python3.12 -m piptools compile --generate-hashes --output-file requirements.txt requirements.in
+python3.12 -m piptools compile --generate-hashes --allow-unsafe --output-file requirements-dev.txt requirements-dev.in
+```
+
+`--allow-unsafe` is needed for the dev lock because pip-tools otherwise leaves `pip` and `setuptools` unpinned, which breaks `--require-hashes` installs. Docker and CI install only the lock files with `--require-hashes`, and CI runs `pip-audit` and `npm audit`.
+
 **Endpoints:**
 - `POST /api/check` — Check a claim. Request: `{"claim": "..."}` → Response with citations and assessment
 - `GET /api/health` — Health check
