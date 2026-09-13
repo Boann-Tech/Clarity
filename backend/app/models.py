@@ -46,6 +46,21 @@ class CheckRequest(BaseModel):
         return " ".join(v.split())  # normalize whitespace
 
 
+class BatchCheckRequest(BaseModel):
+    claims: list[str] = Field(..., min_length=1, max_length=10)
+
+    @field_validator("claims")
+    @classmethod
+    def validate_claims(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for claim in value:
+            claim = " ".join(claim.split())
+            if len(claim) < 10 or len(claim) > 500:
+                raise ValueError("each claim must be between 10 and 500 characters")
+            normalized.append(claim)
+        return normalized
+
+
 # ── Response pieces ──
 
 
@@ -80,3 +95,8 @@ class CheckResponse(BaseModel):
     citations: list[CitationSource] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     policy_version: str = "3.0"
+
+
+class BatchCheckResponse(BaseModel):
+    request_id: str
+    results: list[CheckResponse]

@@ -23,6 +23,8 @@ from app.config import settings
 from app.evidence import retrieve_evidence
 from app.models import (
     Assessment,
+    BatchCheckRequest,
+    BatchCheckResponse,
     CheckRequest,
     CheckResponse,
     CitationSource,
@@ -128,40 +130,14 @@ def _clean_tier(value: object) -> str:
     return tier if tier in {"primary", "fact_check", "secondary_news"} else "secondary_news"
 
 
-@app.post("/api/check")
-async def check_claim(
+async def _check_normalized(
     req: CheckRequest,
-    request: Request,
-    __: None = Depends(_require_token),
+    normalized_claim: str,
+    llm_available: bool,
+    request_id: str,
+    now: str,
 ) -> CheckResponse:
-    """Check a factual claim against curated evidence sources.
-
-    Pipeline:
-      1. Normalise claim + optional LLM claim normalisation for better search
-      2. Search web for evidence
-      3. Fetch and extract relevant passages
-      4. Classify passages (optional LLM: supports/contradicts/context)
-      5. Calculate verdict (LLM-powered if available, deterministic fallback)
-      6. Enforce evidence-first invariant at serialisation boundary
-    """
-    request_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-
-    # Step 1: Normalise
-    normalized_claim = " ".join(req.claim.split())
-
-    cached = _response_cache.get(normalized_claim)
-    if cached is not None:
-        return CheckResponse.model_validate(cached)
-
-    def _finish(response: CheckResponse) -> CheckResponse:
-        _response_cache.set(normalized_claim, response.model_dump())
-        return response
-
-    await _enforce_limits(request, 1)
-
-    llm_available = get_llm_config().enabled
-
+    """Run the evidence pipeline for an already-normalised, cache-missed claim."""
     # Step 1b: Optional LLM claim normalisation for better search queries
     search_queries = [normalized_claim]
     if llm_available:
@@ -171,7 +147,7 @@ async def check_claim(
             normalized = await asyncio.to_thread(normalize_claim, normalized_claim)
             if normalized.get("checkable", True) is False:
                 # LLM says this isn't a checkable factual claim
-                return _finish(CheckResponse(
+                response = CheckResponse(
                     request_id=request_id,
                     claim=req.claim,
                     normalized_claim=_clean_text(normalized.get("normalized_claim"), 500, normalized_claim),
@@ -188,7 +164,9 @@ async def check_claim(
                     citations=[],
                     limitations=["not_checkable"],
                     policy_version="3.0",
-                ))
+                )
+                _response_cache.set(normalized_claim, response.model_dump())
+                return response
 
             # Use LLM-generated search queries for better results
             search_queries = _clean_queries(normalized.get("search_queries"), search_queries)
@@ -312,7 +290,7 @@ async def check_claim(
         if str(c.get("url") or "").startswith("http")
     ]
 
-    return _finish(CheckResponse(
+    response = CheckResponse(
         request_id=request_id,
         claim=req.claim,
         normalized_claim=normalized_claim,
@@ -321,4 +299,68 @@ async def check_claim(
         citations=formatted_citations,
         limitations=sorted(set(limitations)),
         policy_version="3.0",
-    ))
+    )
+    _response_cache.set(normalized_claim, response.model_dump())
+    return response
+
+
+@app.post("/api/check")
+async def check_claim(
+    req: CheckRequest,
+    request: Request,
+    _: None = Depends(_require_token),
+) -> CheckResponse:
+    """Check a factual claim against curated evidence sources.
+
+    Pipeline:
+      1. Normalise claim + optional LLM claim normalisation for better search
+      2. Search web for evidence
+      3. Fetch and extract relevant passages
+      4. Classify passages (optional LLM: supports/contradicts/context)
+      5. Calculate verdict (LLM-powered if available, deterministic fallback)
+      6. Enforce evidence-first invariant at serialisation boundary
+    """
+    request_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    normalized_claim = " ".join(req.claim.split())
+
+    cached = _response_cache.get(normalized_claim)
+    if cached is not None:
+        return CheckResponse.model_validate(cached)
+
+    await _enforce_limits(request, 1)
+    return await _check_normalized(req, normalized_claim, get_llm_config().enabled, request_id, now)
+
+
+@app.post("/api/check/batch")
+async def check_batch(
+    req: BatchCheckRequest,
+    request: Request,
+    _: None = Depends(_require_token),
+) -> BatchCheckResponse:
+    request_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    llm_available = get_llm_config().enabled
+
+    results: list[CheckResponse | None] = [None] * len(req.claims)
+    pending: list[tuple[int, str]] = []
+    for index, claim in enumerate(req.claims):
+        cached = _response_cache.get(claim)
+        if cached is not None:
+            results[index] = CheckResponse.model_validate(cached)
+        else:
+            pending.append((index, claim))
+
+    await _enforce_limits(request, len(pending))
+
+    semaphore = asyncio.Semaphore(3)
+
+    async def run(index: int, claim: str) -> None:
+        async with semaphore:
+            single = CheckRequest(claim=claim)
+            results[index] = await _check_normalized(
+                single, claim, llm_available, str(uuid.uuid4()), now
+            )
+
+    await asyncio.gather(*(run(index, claim) for index, claim in pending))
+    return BatchCheckResponse(request_id=request_id, results=[r for r in results if r is not None])
