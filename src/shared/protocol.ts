@@ -259,6 +259,14 @@ export async function testBackendConnection(url: string, token: string): Promise
 
 /* ───────── Batch claim-check contract (extension → backend) ───────── */
 
+export function chunkClaims(claims: string[], size = 10): string[][] {
+  const chunks: string[][] = []
+  for (let index = 0; index < claims.length; index += size) {
+    chunks.push(claims.slice(index, index + size))
+  }
+  return chunks
+}
+
 export interface BatchCheckResponse {
   results: Array<{
     claim?: string

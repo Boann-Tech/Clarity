@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   DEFAULT_SETTINGS,
   assessPageUrl,
+  chunkClaims,
   fetchBatchAssessments,
   isHostMatch,
   mergeHistory,
@@ -77,5 +78,13 @@ describe("fetchBatchAssessments", () => {
   it("maps network failures to null", async () => {
     const fakeFetch = (async () => { throw new Error("down") }) as typeof fetch
     expect(await fetchBatchAssessments(["A claim long enough."], DEFAULT_SETTINGS, fakeFetch)).toBeNull()
+  })
+})
+
+describe("chunkClaims", () => {
+  it("splits claims into batches of at most ten", () => {
+    expect(chunkClaims(Array.from({ length: 25 }, (_, i) => `claim ${i}`))).toHaveLength(3)
+    expect(chunkClaims(Array.from({ length: 25 }, (_, i) => `claim ${i}`)).map((c) => c.length)).toEqual([10, 10, 5])
+    expect(chunkClaims([], 10)).toEqual([])
   })
 })

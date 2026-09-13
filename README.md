@@ -9,7 +9,7 @@
   </p>
   <p align="center">
     <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version" />
-    <img src="https://img.shields.io/badge/tests-153%20passing-green.svg" alt="Tests" />
+    <img src="https://img.shields.io/badge/tests-154%20passing-green.svg" alt="Tests" />
     <img src="https://img.shields.io/badge/Chrome-MV3-yellow.svg" alt="MV3" />
     <img src="https://img.shields.io/badge/license-MIT-lightgrey.svg" alt="License" />
   </p>
@@ -167,7 +167,7 @@ Models that reject `max_tokens` (some newer OpenAI models) can use `CLARITY_LLM_
 ### API security
 
 - **Optional bearer token:** set `CLARITY_API_TOKEN` on the backend, then paste the same value into the extension's Settings **Backend token** field. When configured, `/api/check` and `/api/check/batch` require `Authorization: Bearer <token>` and return 401 otherwise.
-- **Rate limits:** `CLARITY_RATE_LIMIT` requests per minute (default 60) and `CLARITY_RATE_LIMIT_HOUR` requests per hour (default 500), per client IP; exceeding them returns 429. Cache hits are free — only uncached claims consume units, so a first scan of a 10-claim page costs 10 units and the defaults are sized for it. The extension checks every uncached claim from a scan in a single `POST /api/check/batch` request (1–10 claims, 120 s budget); a batch charges one unit per uncached claim and returns 429 if it would exceed the configured limits, so no per-claim request fan-out and no partial charging.
+- **Rate limits:** `CLARITY_RATE_LIMIT` requests per minute (default 60) and `CLARITY_RATE_LIMIT_HOUR` requests per hour (default 500), per client IP; exceeding them returns 429. Cache hits are free — only uncached claims consume units, so a first scan of a 10-claim page costs 10 units and the defaults are sized for it. The extension checks uncached claims in `POST /api/check/batch` requests of at most 10 claims each (a scan of up to 20 claims makes at most two requests, 120 s budget per batch); a batch charges one unit per uncached claim and returns 429 if it would exceed the configured limits, so no per-claim request fan-out and no partial charging.
 - **Deploy extension and backend together:** the extension now uses `POST /api/check/batch`. A new extension pointed at a backend that predates the batch route will report an HTTP 404 error per claim and mark it Unverified — it never fabricates a verdict. Upgrade both sides together.
 - **Response cache:** `CLARITY_CACHE_TTL` seconds (default 1800) controls how long checked-claim responses are cached.
 - **No baked secrets:** `backend/.dockerignore` excludes `.env`; pass it at runtime with `docker run --env-file backend/.env`.
@@ -198,7 +198,7 @@ Key design decisions:
 git clone https://github.com/boanntech/clarity
 cd clarity
 npm install
-npm test          # 19 tests — extension, runs in ~180ms
+npm test          # 20 tests — extension, runs in ~190ms
 npm run build     # → dist/
 
 # Backend tests:

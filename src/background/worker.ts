@@ -16,6 +16,7 @@ import type { PagePayload, ClaimCheck, Citation, AppSettings } from "../shared/p
 import {
   DEFAULT_SETTINGS,
   assessmentFromResponse,
+  chunkClaims,
   extractCandidates,
   fetchBatchAssessments,
   mapTier,
@@ -120,38 +121,42 @@ async function handlePageCheck(payload: PagePayload, maxClaims = 10): Promise<{ 
 
   if (pending.length > 0) {
     const settings = await getSettings()
-    const outcome = await fetchBatchAssessments(pending, settings)
-    if (outcome && "results" in outcome) {
-      pending.forEach((claim, index) => {
-        const raw = outcome.results[index]
-        const result = assessmentFromResponse({
-          claim: String(raw?.claim ?? claim),
-          verdict: String(raw?.assessment?.verdict ?? "unverified"),
-          confidence: Number(raw?.assessment?.confidence ?? 0),
-          explanation: String(raw?.assessment?.explanation ?? "No validated citations could be retrieved for this claim."),
-          citations: mapBackendCitations(raw?.citations ?? []),
-          checkedAt: String(raw?.checked_at ?? new Date().toISOString()),
-        })
-        claimCache.set(claim, { result, timestamp: Date.now() })
-        resolved.set(claim, result)
-      })
-    } else {
-      const explanation = outcome && "error" in outcome
-        ? `The Clarity backend rejected the request (${outcome.error}). Check the backend URL/token in Settings.`
-        : "Offline — the Clarity backend could not be reached. Check your connection or backend URL in Settings."
-      for (const claim of pending) {
-        const result = assessmentFromResponse({
-          claim,
-          verdict: "unverified",
-          confidence: 0,
-          explanation,
-          citations: [],
-          checkedAt: new Date().toISOString(),
-        })
-        claimCache.set(claim, { result, timestamp: Date.now() })
-        resolved.set(claim, result)
-      }
-    }
+    await Promise.all(
+      chunkClaims(pending, 10).map(async (chunk) => {
+        const outcome = await fetchBatchAssessments(chunk, settings)
+        if (outcome && "results" in outcome) {
+          chunk.forEach((claim, index) => {
+            const raw = outcome.results[index]
+            const result = assessmentFromResponse({
+              claim: String(raw?.claim ?? claim),
+              verdict: String(raw?.assessment?.verdict ?? "unverified"),
+              confidence: Number(raw?.assessment?.confidence ?? 0),
+              explanation: String(raw?.assessment?.explanation ?? "No validated citations could be retrieved for this claim."),
+              citations: mapBackendCitations(raw?.citations ?? []),
+              checkedAt: String(raw?.checked_at ?? new Date().toISOString()),
+            })
+            claimCache.set(claim, { result, timestamp: Date.now() })
+            resolved.set(claim, result)
+          })
+        } else {
+          const explanation = outcome && "error" in outcome
+            ? `The Clarity backend rejected the request (${outcome.error}). Check the backend URL/token in Settings.`
+            : "Offline — the Clarity backend could not be reached. Check your connection or backend URL in Settings."
+          for (const claim of chunk) {
+            const result = assessmentFromResponse({
+              claim,
+              verdict: "unverified",
+              confidence: 0,
+              explanation,
+              citations: [],
+              checkedAt: new Date().toISOString(),
+            })
+            claimCache.set(claim, { result, timestamp: Date.now() })
+            resolved.set(claim, result)
+          }
+        }
+      }),
+    )
   }
 
   return { claims: checkableClaims.map((claim) => resolved.get(claim)!) }
