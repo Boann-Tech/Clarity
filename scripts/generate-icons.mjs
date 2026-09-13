@@ -27,21 +27,43 @@ function chunk(type, data) {
   return Buffer.concat([length, typeBuf, data, crc])
 }
 
+// Matches the landing page's .hero-icon and src/icons/icon.svg: a rounded
+// square filled with the --gradient-primary blue-to-cyan diagonal, holding a
+// white "C" (drawn as a ring open on the right, since this generator has no
+// font rasterizer).
+const GRADIENT_START = [0x3b, 0x82, 0xf6] // #3b82f6
+const GRADIENT_END = [0x06, 0xb6, 0xd4] // #06b6d4
+const WHITE = [0xff, 0xff, 0xff]
+
+function mix([r1, g1, b1], [r2, g2, b2], t) {
+  return [Math.round(r1 + (r2 - r1) * t), Math.round(g1 + (g2 - g1) * t), Math.round(b1 + (b2 - b1) * t)]
+}
+
 function renderPng(size) {
   const pixels = Buffer.alloc(size * size * 4)
   const center = (size - 1) / 2
-  const outer = size * 0.44
-  const inner = size * 0.28
+  const radius = size * 0.25 // border-radius: 1.25rem on a 5rem box
+  const innerMin = radius
+  const innerMax = size - 1 - radius
+  const outer = size * 0.35
+  const inner = size * 0.21
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
+      const cx = x < innerMin ? innerMin : x > innerMax ? innerMax : x
+      const cy = y < innerMin ? innerMin : y > innerMax ? innerMax : y
+      if (Math.hypot(x - cx, y - cy) > radius) continue // outside the rounded rect: leave transparent
+
+      const offset = (y * size + x) * 4
+      const gradientT = (x + y) / (2 * (size - 1))
+      const background = mix(GRADIENT_START, GRADIENT_END, gradientT)
+
       const dx = x - center
       const dy = y - center
       const distance = Math.hypot(dx, dy)
       const angle = Math.atan2(dy, dx)
       const inRing = distance <= outer && distance >= inner
-      const isMouth = inRing && Math.abs(angle) < Math.PI / 5
-      const offset = (y * size + x) * 4
-      const [r, g, b] = inRing && !isMouth ? [74, 222, 128] : distance < inner ? [26, 33, 62] : [15, 52, 96]
+      const isGap = inRing && Math.abs(angle) < Math.PI / 5
+      const [r, g, b] = inRing && !isGap ? WHITE : background
       pixels[offset] = r
       pixels[offset + 1] = g
       pixels[offset + 2] = b
