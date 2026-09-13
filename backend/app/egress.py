@@ -12,10 +12,10 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import socket
 from typing import Any, Awaitable, Callable
 
 import httpcore
-from httpcore._backends.anyio import AnyIOBackend
 
 logger = logging.getLogger("clarity.egress")
 
@@ -27,7 +27,7 @@ class BlockedHostError(Exception):
 
 
 async def _default_resolver(host: str) -> list[tuple[Any, ...]]:
-    return await asyncio.get_running_loop().getaddrinfo(host, None)
+    return await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
 
 
 async def resolve_public_ips(host: str, resolver: Resolver | None = None) -> list[str]:
@@ -35,7 +35,7 @@ async def resolve_public_ips(host: str, resolver: Resolver | None = None) -> lis
     resolve = resolver or _default_resolver
     try:
         infos = await resolve(host)
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise BlockedHostError(f"DNS resolution failed for {host}") from exc
 
     addresses: list[str] = []
@@ -56,7 +56,7 @@ class PublicOnlyBackend(httpcore.AsyncNetworkBackend):
     """Network backend that only dials validated public IP literals."""
 
     def __init__(self, delegate: httpcore.AsyncNetworkBackend | None = None) -> None:
-        self._delegate = delegate or AnyIOBackend()
+        self._delegate = delegate or httpcore.AnyIOBackend()
 
     async def connect_tcp(
         self,

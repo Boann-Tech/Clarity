@@ -47,6 +47,12 @@ def test_rejects_empty_and_failed_resolution():
         asyncio.run(egress.resolve_public_ips("example.com", resolver=failed))
 
 
+@pytest.mark.parametrize("host", ["a..b", "x" * 300])
+def test_rejects_unencodable_host(host):
+    with pytest.raises(egress.BlockedHostError):
+        asyncio.run(egress.resolve_public_ips(host))
+
+
 class FakeStream:
     def __init__(self):
         self.closed = False
