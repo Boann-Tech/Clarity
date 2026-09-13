@@ -10,7 +10,6 @@ Phases:
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import re
 import time
 from dataclasses import dataclass
@@ -20,6 +19,7 @@ from urllib.parse import parse_qs, urljoin, urlparse
 import defusedxml.ElementTree as ET
 import httpx
 from app.config import settings
+from app.egress import build_pool
 from app.sources import classify_domain, deduplicate_and_rank, tier_weight
 
 
@@ -352,87 +352,76 @@ def is_public_http_url(url: str) -> bool:
     return parsed.scheme in ("http", "https") and bool(parsed.hostname)
 
 
-async def host_is_public(host: str) -> bool:
-    if not host:
-        return False
+def _decode_body(body: bytes, headers: dict[str, str]) -> str:
+    content_type = headers.get("content-type", "")
+    match = re.search(r"charset=([^;\s]+)", content_type, re.IGNORECASE)
+    encoding = match.group(1).strip("\"'") if match else "utf-8"
     try:
-        infos = await asyncio.get_running_loop().getaddrinfo(host, None)
-    except OSError:
-        return False
-    if not infos:
-        return False
-    for info in infos:
-        try:
-            address = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            return False
-        if not address.is_global:
-            return False
-    return True
+        return body.decode(encoding, errors="replace")
+    except LookupError:
+        return body.decode("utf-8", errors="replace")
 
 
-async def _stream_page(client, url: str, headers: dict, max_bytes: int):
-    """Return (status, headers, body_or_None, final_url)."""
-    async with client.stream("GET", url, headers=headers) as response:
-        status = response.status_code
-        response_headers = dict(response.headers)
-        if status in REDIRECT_CODES:
-            return status, response_headers, None, str(response.url)
+async def _request(pool, url: str, headers: dict[str, str], max_bytes: int):
+    """One validated hop. Returns (status, headers, body_or_None)."""
+    timeout = settings.fetch_timeout
+    extensions = {"timeout": {"connect": timeout, "read": timeout, "write": timeout, "pool": timeout}}
+    async with pool.stream("GET", url, headers=headers, extensions=extensions) as response:
+        status = response.status
+        response_headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in response.headers
+        }
         chunks: list[bytes] = []
         total = 0
-        async for chunk in response.aiter_bytes():
+        async for chunk in response.aiter_stream():
             total += len(chunk)
             if total > max_bytes:
-                return status, response_headers, None, str(response.url)
+                return status, response_headers, None
             chunks.append(chunk)
-        body = b"".join(chunks).decode(response.charset_encoding or "utf-8", errors="replace")
-        return status, response_headers, body, str(response.url)
+        return status, response_headers, b"".join(chunks)
 
 
 async def fetch_page(url: str) -> FetchedPage | None:
     """Fetch a curated page, validating every hop against SSRF and tier rules.
 
-    Unknown or excluded domains are never requested. Redirects are followed
-    manually (max 5) and every hop must be a public http(s) URL on a curated
-    domain. Only the final URL's content is returned.
+    Unknown or excluded domains are never requested. Every connection dials a
+    pre-validated public IP (see app.egress). Redirects are followed manually
+    (max 5) and every hop must be a public http(s) URL on a curated domain.
     """
     current = url
+    pool = build_pool()
     try:
-        async with httpx.AsyncClient(timeout=settings.fetch_timeout) as client:
-            for _ in range(MAX_REDIRECTS + 1):
-                if not is_public_http_url(current):
+        for _ in range(MAX_REDIRECTS + 1):
+            if not is_public_http_url(current):
+                return None
+            tier = classify_domain(current).tier
+            if tier not in CURATED_TIERS:
+                return None
+            max_bytes = 2_000_000 if tier in {"primary", "fact_check"} else 200_000
+            status, headers, body = await _request(
+                pool, current, {"User-Agent": settings.user_agent}, max_bytes
+            )
+            if status in {401, 403, 429}:
+                status, headers, body = await _request(pool, current, BROWSER_HEADERS, max_bytes)
+            if status in REDIRECT_CODES:
+                location = headers.get("location")
+                if not location:
                     return None
-                tier = classify_domain(current).tier
-                if tier not in CURATED_TIERS:
-                    return None
-                host = urlparse(current).hostname or ""
-                if not await host_is_public(host):
-                    return None
-                max_bytes = 2_000_000 if tier in {"primary", "fact_check"} else 200_000
-                status, headers, body, final_url = await _stream_page(
-                    client, current, {"User-Agent": settings.user_agent}, max_bytes
-                )
-                if status in {401, 403, 429}:
-                    status, headers, body, final_url = await _stream_page(
-                        client, current, BROWSER_HEADERS, max_bytes
-                    )
-                if status in REDIRECT_CODES:
-                    location = headers.get("location")
-                    if not location:
-                        return None
-                    current = urljoin(current, location)
-                    continue
-                if status >= 400 or body is None:
-                    return None
-                content_type = headers.get("content-type", "")
-                if "text/html" not in content_type and "text/plain" not in content_type:
-                    return None
-                if classify_domain(final_url).tier not in CURATED_TIERS:
-                    return None
-                return FetchedPage(html=body, final_url=final_url)
+                current = urljoin(current, location)
+                continue
+            if status >= 400 or body is None:
+                return None
+            content_type = headers.get("content-type", "")
+            if "text/html" not in content_type and "text/plain" not in content_type:
+                return None
+            if classify_domain(current).tier not in CURATED_TIERS:
+                return None
+            return FetchedPage(html=_decode_body(body, headers), final_url=current)
     except Exception:
         return None
-    return None
+    finally:
+        await pool.aclose()
 
 
 def extract_text_from_html(html: str, max_chars: int = 8000) -> str:
