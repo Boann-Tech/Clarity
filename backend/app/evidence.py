@@ -26,6 +26,17 @@ from app.sources import classify_domain, deduplicate_and_rank, tier_weight
 logger = logging.getLogger("clarity.evidence")
 
 
+def _err(e: BaseException) -> str:
+    """Format an exception for logging, including cases where str(e) is
+    empty. Several httpcore/anyio exceptions (timeouts, EndOfStream,
+    ClosedResourceError) are raised with no message at all, so `%s`-ing them
+    directly logs nothing useful — just the exception type, with no way to
+    tell a timeout from a connection reset.
+    """
+    text = str(e)
+    return f"{type(e).__name__}: {text}" if text else type(e).__name__
+
+
 # ── Search backends ──
 
 
@@ -86,7 +97,7 @@ async def search_ddg(query: str, max_results: int = 10) -> list[dict]:
                 return []
             resp.raise_for_status()
     except Exception as e:
-        logger.warning("DDG search failed for %r: %s", query[:60], e)
+        logger.warning("DDG search failed for %r: %s", query[:60], _err(e))
         return []
 
     if resp.status_code != 200 or "duckduckgo.com" not in str(resp.url):
@@ -133,7 +144,7 @@ async def search_bing_rss(query: str, max_results: int = 10) -> list[dict]:
                 return []
         root = ET.fromstring(response.content)
     except Exception as e:
-        logger.warning("Bing News RSS search failed for %r: %s", query[:60], e)
+        logger.warning("Bing News RSS search failed for %r: %s", query[:60], _err(e))
         return []
 
     results = []
@@ -171,7 +182,7 @@ async def search_brave(query: str, max_results: int = 10) -> list[dict]:
             response.raise_for_status()
             payload = response.json()
     except Exception as e:
-        logger.warning("Brave search failed for %r: %s", query[:60], e)
+        logger.warning("Brave search failed for %r: %s", query[:60], _err(e))
         return []
     results = [
         {
@@ -205,7 +216,7 @@ async def search_serpapi(query: str, max_results: int = 10) -> list[dict]:
             response.raise_for_status()
             payload = response.json()
     except Exception as e:
-        logger.warning("SerpAPI search failed for %r: %s", query[:60], e)
+        logger.warning("SerpAPI search failed for %r: %s", query[:60], _err(e))
         return []
     results = [
         {
@@ -247,7 +258,7 @@ async def search_bls_cpi(claim: str) -> list[dict]:
             response.raise_for_status()
             payload = response.json()
     except Exception as e:
-        logger.warning("BLS CPI API request failed: %s", e)
+        logger.warning("BLS CPI API request failed: %s", _err(e))
         return []
 
     try:
@@ -304,7 +315,7 @@ async def search_google(query: str, max_results: int = 10) -> list[dict]:
             resp.raise_for_status()
             data = resp.json()
     except Exception as e:
-        logger.warning("Google CSE search failed for %r: %s", query[:60], e)
+        logger.warning("Google CSE search failed for %r: %s", query[:60], _err(e))
         return []
 
     results = []
@@ -369,7 +380,7 @@ async def search_evidence(query: str, max_results: int = 10) -> list[dict]:
             all_results.extend(sr)
         elif isinstance(sr, BaseException):
             per_backend_counts[name] = "error"
-            logger.warning("%s search raised unexpectedly for %r: %s", name, query[:60], sr)
+            logger.warning("%s search raised unexpectedly for %r: %s", name, query[:60], _err(sr))
 
     # Deduplicate by URL
     seen = set()
@@ -495,7 +506,7 @@ async def fetch_page(url: str) -> FetchedPage | None:
         logger.info("fetch_page: rejecting %r — exceeded %d redirect hops", url, MAX_REDIRECTS)
         return None
     except Exception as e:
-        logger.warning("fetch_page: %r raised during fetch: %s", current, e)
+        logger.warning("fetch_page: %r raised during fetch: %s", current, _err(e))
         return None
     finally:
         await pool.aclose()
@@ -679,7 +690,7 @@ async def _classify_and_format(
             ranked = [src for src in ranked if src.get("relation", "context") != "irrelevant"]
             logger.info("LLM classification: kept %d/%d passage(s) as relevant", len(ranked), before)
         except Exception as e:
-            logger.warning("LLM classification failed, defaulting %d passage(s) to 'context': %s", len(ranked), e)
+            logger.warning("LLM classification failed, defaulting %d passage(s) to 'context': %s", len(ranked), _err(e))
             for src in ranked:
                 src.setdefault("relation", "context")
 
@@ -751,7 +762,7 @@ async def retrieve_evidence_multi(
         if isinstance(result_list, list):
             merged.extend(result_list)
         elif isinstance(result_list, BaseException):
-            logger.warning("search_evidence raised unexpectedly for query %r: %s", query[:60], result_list)
+            logger.warning("search_evidence raised unexpectedly for query %r: %s", query[:60], _err(result_list))
     if not merged:
         logger.info("retrieve_evidence_multi(%r): no query returned results — 0 citations", claim[:80])
         return []
