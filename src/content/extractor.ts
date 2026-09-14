@@ -329,26 +329,40 @@ function highlightClaimsOnPage(claims: Array<{ text: string; verdict: string }>)
 
 /* ───────── Listen for requests from background ───────── */
 
-chrome.runtime.onMessage.addListener(
-  (
-    message: { type: string; claims?: Array<{ text: string; verdict: string }> },
-    _sender,
-    sendResponse,
-  ) => {
-    if (message.type === "GET_PAGE_TEXT") {
-      const payload = collectPagePayload()
-      sendResponse(payload)
-      return
-    }
-    if (message.type === "HIGHLIGHT_CLAIMS") {
-      const highlighted = highlightClaimsOnPage(message.claims ?? [])
-      sendResponse({ highlighted })
-      return
-    }
-    if (message.type === "CLEAR_HIGHLIGHTS") {
-      clearHighlights()
-      sendResponse({ ok: true })
-      return
-    }
-  },
-)
+// getPagePayloadForTab (worker.ts) re-injects this script via
+// chrome.scripting.executeScript whenever a plain sendMessage to an
+// already-injected instance fails — e.g. a stale instance left over from
+// before the extension itself was reloaded. Re-running this file would
+// otherwise register a second onMessage listener alongside the first,
+// racing to answer every future message. Guard with a flag on `window`
+// (survives across separate injections into the same document, unlike a
+// module-scope variable, since each injection gets a fresh script scope)
+// so a re-injection only ever adds the listener once.
+const INJECTED_FLAG = "__clarityExtractorListening"
+if (!(window as unknown as Record<string, boolean>)[INJECTED_FLAG]) {
+  ;(window as unknown as Record<string, boolean>)[INJECTED_FLAG] = true
+
+  chrome.runtime.onMessage.addListener(
+    (
+      message: { type: string; claims?: Array<{ text: string; verdict: string }> },
+      _sender,
+      sendResponse,
+    ) => {
+      if (message.type === "GET_PAGE_TEXT") {
+        const payload = collectPagePayload()
+        sendResponse(payload)
+        return
+      }
+      if (message.type === "HIGHLIGHT_CLAIMS") {
+        const highlighted = highlightClaimsOnPage(message.claims ?? [])
+        sendResponse({ highlighted })
+        return
+      }
+      if (message.type === "CLEAR_HIGHLIGHTS") {
+        clearHighlights()
+        sendResponse({ ok: true })
+        return
+      }
+    },
+  )
+}
