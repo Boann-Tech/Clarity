@@ -288,6 +288,10 @@ async def _check_normalized(
             )
 
     metrics.incr(f"verdict:{assessment.verdict.value}")
+    logger.info(
+        "check complete: claim=%r verdict=%s confidence=%.2f citations=%d",
+        normalized_claim[:80], assessment.verdict.value, assessment.confidence, len(citations),
+    )
 
     # Build limitations
     limitations = []

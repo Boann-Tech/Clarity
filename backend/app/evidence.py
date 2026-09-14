@@ -10,6 +10,7 @@ Phases:
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ import httpx
 from app.config import settings
 from app.egress import build_pool
 from app.sources import classify_domain, deduplicate_and_rank, tier_weight
+
+logger = logging.getLogger("clarity.evidence")
 
 
 # ── Search backends ──
@@ -72,16 +75,25 @@ async def search_ddg(query: str, max_results: int = 10) -> list[dict]:
             resp = await client.post(url, headers=headers, data=data)
             # DDG returns HTTP 202 with a challenge/interstitial page when it
             # blocks automated Lite search. Treat it as unavailable, never as
-            # an empty-but-valid result set.
+            # an empty-but-valid result set. This is common from datacenter/
+            # server IPs (e.g. a Docker host), not just misconfiguration.
             if resp.status_code != 200 or "duckduckgo.com" not in str(resp.url):
+                logger.info(
+                    "DDG search blocked or unavailable (status=%s) for %r — "
+                    "treating as 0 results, not an error",
+                    resp.status_code, query[:60],
+                )
                 return []
             resp.raise_for_status()
-    except Exception:
+    except Exception as e:
+        logger.warning("DDG search failed for %r: %s", query[:60], e)
         return []
 
     if resp.status_code != 200 or "duckduckgo.com" not in str(resp.url):
         return []
-    return parse_ddg_results(resp.text, max_results)
+    results = parse_ddg_results(resp.text, max_results)
+    logger.info("DDG search: %d result(s) for %r", len(results), query[:60])
+    return results
 
 
 def _unwrap_bing_news_link(link: str) -> str:
@@ -117,9 +129,11 @@ async def search_bing_rss(query: str, max_results: int = 10) -> list[dict]:
             )
             response.raise_for_status()
             if len(response.content) > 1_000_000:
+                logger.info("Bing News RSS response for %r exceeded 1MB — treating as unavailable", query[:60])
                 return []
         root = ET.fromstring(response.content)
-    except Exception:
+    except Exception as e:
+        logger.warning("Bing News RSS search failed for %r: %s", query[:60], e)
         return []
 
     results = []
@@ -136,6 +150,7 @@ async def search_bing_rss(query: str, max_results: int = 10) -> list[dict]:
             })
         if len(results) >= max_results:
             break
+    logger.info("Bing News RSS search: %d result(s) for %r", len(results), query[:60])
     return results
 
 
@@ -155,9 +170,10 @@ async def search_brave(query: str, max_results: int = 10) -> list[dict]:
             )
             response.raise_for_status()
             payload = response.json()
-    except Exception:
+    except Exception as e:
+        logger.warning("Brave search failed for %r: %s", query[:60], e)
         return []
-    return [
+    results = [
         {
             "title": item.get("title", ""),
             "url": item.get("url", ""),
@@ -167,6 +183,8 @@ async def search_brave(query: str, max_results: int = 10) -> list[dict]:
         for item in payload.get("web", {}).get("results", [])
         if item.get("url")
     ][:max_results]
+    logger.info("Brave search: %d result(s) for %r", len(results), query[:60])
+    return results
 
 
 async def search_serpapi(query: str, max_results: int = 10) -> list[dict]:
@@ -186,9 +204,10 @@ async def search_serpapi(query: str, max_results: int = 10) -> list[dict]:
             )
             response.raise_for_status()
             payload = response.json()
-    except Exception:
+    except Exception as e:
+        logger.warning("SerpAPI search failed for %r: %s", query[:60], e)
         return []
-    return [
+    results = [
         {
             "title": item.get("title", ""),
             "url": item.get("link", ""),
@@ -198,6 +217,8 @@ async def search_serpapi(query: str, max_results: int = 10) -> list[dict]:
         for item in payload.get("organic_results", [])
         if item.get("link")
     ][:max_results]
+    logger.info("SerpAPI search: %d result(s) for %r", len(results), query[:60])
+    return results
 
 
 US_MARKERS = re.compile(r"\b(?:u\.?s\.?a?|united states|american)\b", re.IGNORECASE)
@@ -225,11 +246,13 @@ async def search_bls_cpi(claim: str) -> list[dict]:
             )
             response.raise_for_status()
             payload = response.json()
-    except Exception:
+    except Exception as e:
+        logger.warning("BLS CPI API request failed: %s", e)
         return []
 
     try:
         if payload.get("status") != "REQUEST_SUCCEEDED":
+            logger.info("BLS CPI API returned status=%r, not evidence for this claim", payload.get("status"))
             return []
         series = payload.get("Results", {}).get("series", [])
         data = series[0].get("data", []) if series else []
@@ -250,6 +273,7 @@ async def search_bls_cpi(claim: str) -> list[dict]:
         f"compared with {prior:.3f} in December {start_year}: a {annual_change:.1f}% "
         f"year-over-year increase."
     )
+    logger.info("BLS CPI direct connector matched — returning primary-source evidence, skipping generic search")
     return [{
         "title": f"Consumer Price Index for All Urban Consumers (CPI-U), {end_year}",
         "url": "https://www.bls.gov/cpi/",
@@ -279,7 +303,8 @@ async def search_google(query: str, max_results: int = 10) -> list[dict]:
             resp = await client.get(url, params=params)
             resp.raise_for_status()
             data = resp.json()
-    except Exception:
+    except Exception as e:
+        logger.warning("Google CSE search failed for %r: %s", query[:60], e)
         return []
 
     results = []
@@ -290,7 +315,9 @@ async def search_google(query: str, max_results: int = 10) -> list[dict]:
             "snippet": item.get("snippet", ""),
             "source": "google_cse",
         })
-    return results[:max_results]
+    results = results[:max_results]
+    logger.info("Google CSE search: %d result(s) for %r", len(results), query[:60])
+    return results
 
 
 async def search_evidence(query: str, max_results: int = 10) -> list[dict]:
@@ -312,25 +339,37 @@ async def search_evidence(query: str, max_results: int = 10) -> list[dict]:
 
     # Run configured discovery searches in parallel. Bing RSS remains a
     # no-key fallback; all returned pages still pass curated-domain filtering.
-    tasks = []
+    backends: list[tuple[str, object]] = []
     if settings.ddg_enabled:
-        tasks.append(search_ddg(query, max_results))
+        backends.append(("ddg", search_ddg(query, max_results)))
     if settings.google_api_key and settings.google_cse_id:
-        tasks.append(search_google(query, max_results))
+        backends.append(("google_cse", search_google(query, max_results)))
     if settings.brave_search_api_key:
-        tasks.append(search_brave(query, max_results))
+        backends.append(("brave", search_brave(query, max_results)))
     if settings.serpapi_key:
-        tasks.append(search_serpapi(query, max_results))
+        backends.append(("serpapi", search_serpapi(query, max_results)))
     # Last-resort no-key discovery fallback. It is not used when a direct
     # connector supplies evidence, and all results still require validation.
-    tasks.append(search_bing_rss(query, max_results))
+    backends.append(("bing_rss", search_bing_rss(query, max_results)))
 
-    search_results = await asyncio.gather(*tasks, return_exceptions=True)
+    if len(backends) == 1:
+        logger.info(
+            "Only the keyless bing_rss fallback is configured — set "
+            "CLARITY_BRAVE_SEARCH_API_KEY (recommended), CLARITY_SERPAPI_KEY, "
+            "or CLARITY_GOOGLE_API_KEY/CLARITY_GOOGLE_CSE_ID for reliable search."
+        )
+
+    search_results = await asyncio.gather(*(coro for _, coro in backends), return_exceptions=True)
     all_results.extend(direct_results)
 
-    for sr in search_results:
+    per_backend_counts = {}
+    for (name, _), sr in zip(backends, search_results):
         if isinstance(sr, list):
+            per_backend_counts[name] = len(sr)
             all_results.extend(sr)
+        elif isinstance(sr, BaseException):
+            per_backend_counts[name] = "error"
+            logger.warning("%s search raised unexpectedly for %r: %s", name, query[:60], sr)
 
     # Deduplicate by URL
     seen = set()
@@ -342,6 +381,12 @@ async def search_evidence(query: str, max_results: int = 10) -> list[dict]:
         seen.add(url)
         unique.append(r)
 
+    logger.info(
+        "search_evidence(%r): %s -> %d unique result(s)",
+        query[:60],
+        ", ".join(f"{name}={count}" for name, count in per_backend_counts.items()),
+        len(unique),
+    )
     return unique[:max_results]
 
 
@@ -410,11 +455,13 @@ async def fetch_page(url: str) -> FetchedPage | None:
     current = url
     pool = build_pool()
     try:
-        for _ in range(MAX_REDIRECTS + 1):
+        for hop in range(MAX_REDIRECTS + 1):
             if not is_public_http_url(current):
+                logger.info("fetch_page: rejecting %r — not a public http(s) URL", current)
                 return None
             tier = classify_domain(current).tier
             if tier not in CURATED_TIERS:
+                logger.info("fetch_page: rejecting %r — tier=%r not curated", current, tier)
                 return None
             max_bytes = 2_000_000 if tier in {"primary", "fact_check"} else 200_000
             status, headers, body = await _request(
@@ -425,18 +472,30 @@ async def fetch_page(url: str) -> FetchedPage | None:
             if status in REDIRECT_CODES:
                 location = headers.get("location")
                 if not location:
+                    logger.info("fetch_page: %r sent redirect status=%s with no Location header", current, status)
                     return None
                 current = urljoin(current, location)
                 continue
             if status >= 400 or body is None:
+                logger.info(
+                    "fetch_page: rejecting %r — status=%s%s",
+                    current, status, "" if body is not None else " (body exceeded max size)",
+                )
                 return None
             content_type = headers.get("content-type", "")
             if "text/html" not in content_type and "text/plain" not in content_type:
+                logger.info("fetch_page: rejecting %r — content-type=%r", current, content_type)
                 return None
             if classify_domain(current).tier not in CURATED_TIERS:
+                logger.info("fetch_page: rejecting %r — redirected to a non-curated domain", current)
                 return None
+            if hop > 0:
+                logger.info("fetch_page: fetched %r (via %d redirect hop(s) from %r)", current, hop, url)
             return FetchedPage(html=_decode_body(body, headers), final_url=current)
-    except Exception:
+        logger.info("fetch_page: rejecting %r — exceeded %d redirect hops", url, MAX_REDIRECTS)
+        return None
+    except Exception as e:
+        logger.warning("fetch_page: %r raised during fetch: %s", current, e)
         return None
     finally:
         await pool.aclose()
@@ -548,6 +607,10 @@ def _curate_search_results(search_results: list[dict]) -> list[dict]:
         if classify_domain(url).tier not in CURATED_TIERS:
             continue
         curated.append(result)
+    logger.info(
+        "curation: %d/%d search result(s) are on a curated (trusted) domain",
+        len(curated), len(search_results),
+    )
     return curated
 
 
@@ -577,8 +640,10 @@ async def _fetch_and_rank(claim: str, curated: list[dict], max_sources: int) -> 
             "retrieval_status": "ok",
         }
 
-    built = await asyncio.gather(*(build_source(r) for r in curated[:max_sources]))
+    attempted = curated[:max_sources]
+    built = await asyncio.gather(*(build_source(r) for r in attempted))
     raw_sources = [source for source in built if source is not None]
+    logger.info("fetch: %d/%d candidate page(s) fetched and yielded a usable passage", len(raw_sources), len(attempted))
     if not raw_sources:
         return []
     return deduplicate_and_rank(raw_sources)
@@ -610,8 +675,11 @@ async def _classify_and_format(
                     ranked[idx]["relation"] = classified_p.get("relation", "context")
                     ranked[idx]["llm_confidence"] = classified_p.get("llm_confidence", 0.5)
                     ranked[idx]["reasoning"] = classified_p.get("reasoning", "")
+            before = len(ranked)
             ranked = [src for src in ranked if src.get("relation", "context") != "irrelevant"]
-        except Exception:
+            logger.info("LLM classification: kept %d/%d passage(s) as relevant", len(ranked), before)
+        except Exception as e:
+            logger.warning("LLM classification failed, defaulting %d passage(s) to 'context': %s", len(ranked), e)
             for src in ranked:
                 src.setdefault("relation", "context")
 
@@ -638,14 +706,19 @@ async def _classify_and_format(
 async def retrieve_evidence(claim: str, max_sources: int = 8, use_llm: bool = False) -> list[dict]:
     search_results = await search_evidence(claim, max_results=15)
     if not search_results:
+        logger.info("retrieve_evidence(%r): search returned nothing — 0 citations", claim[:80])
         return []
     curated = _curate_search_results(search_results)
     if not curated:
+        logger.info("retrieve_evidence(%r): no search result was on a curated domain — 0 citations", claim[:80])
         return []
     ranked = await _fetch_and_rank(claim, curated, max_sources)
     if not ranked:
+        logger.info("retrieve_evidence(%r): no candidate page could be fetched — 0 citations", claim[:80])
         return []
-    return await _classify_and_format(claim, ranked, use_llm, max_sources)
+    citations = await _classify_and_format(claim, ranked, use_llm, max_sources)
+    logger.info("retrieve_evidence(%r): %d citation(s)", claim[:80], len(citations))
+    return citations
 
 
 async def retrieve_evidence_multi(
@@ -667,22 +740,30 @@ async def retrieve_evidence_multi(
     than a keyword-optimised sub-query.
     """
     queries = list(dict.fromkeys(q.strip() for q in search_queries if q and q.strip())) or [claim]
+    logger.info("retrieve_evidence_multi(%r): searching %d quer(ies): %s", claim[:80], len(queries), queries)
 
     search_result_lists = await asyncio.gather(
         *(search_evidence(query, max_results=15) for query in queries),
         return_exceptions=True,
     )
     merged: list[dict] = []
-    for result_list in search_result_lists:
+    for query, result_list in zip(queries, search_result_lists):
         if isinstance(result_list, list):
             merged.extend(result_list)
+        elif isinstance(result_list, BaseException):
+            logger.warning("search_evidence raised unexpectedly for query %r: %s", query[:60], result_list)
     if not merged:
+        logger.info("retrieve_evidence_multi(%r): no query returned results — 0 citations", claim[:80])
         return []
 
     curated = _curate_search_results(merged)
     if not curated:
+        logger.info("retrieve_evidence_multi(%r): no search result was on a curated domain — 0 citations", claim[:80])
         return []
     ranked = await _fetch_and_rank(claim, curated, max_sources)
     if not ranked:
+        logger.info("retrieve_evidence_multi(%r): no candidate page could be fetched — 0 citations", claim[:80])
         return []
-    return await _classify_and_format(claim, ranked, use_llm, max_sources)
+    citations = await _classify_and_format(claim, ranked, use_llm, max_sources)
+    logger.info("retrieve_evidence_multi(%r): %d citation(s)", claim[:80], len(citations))
+    return citations
