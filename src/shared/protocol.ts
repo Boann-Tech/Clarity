@@ -158,14 +158,20 @@ export function assessmentFromResponse(raw: RawClaimResponse): ClaimCheck {
   } else if (raw.verdict === "misleading" && citations.length < 2) {
     verdict = "unverified"
     explanation = "A misleading verdict requires at least two independent sources."
-  } else {
+  } else if (raw.verdict === "unverified") {
+    // A legitimate backend verdict (e.g. only secondary-news sources, no
+    // primary/fact-check source) — not a garbage/unrecognised string. Keep
+    // the backend's own explanation instead of falling through to the
+    // generic "not recognised" message below, which is meant only for a
+    // truly unexpected verdict value.
+    verdict = "unverified"
+    explanation = raw.explanation || "The available evidence was insufficient for a verdict."
+  } else if (["supported", "contradicted", "misleading"].includes(raw.verdict)) {
     verdict = raw.verdict as Verdict
-    if (!["supported", "contradicted", "misleading"].includes(verdict)) {
-      verdict = "unverified"
-      explanation = "Verdict type is not recognised without evidence backing."
-    } else {
-      explanation = raw.explanation || `Assessment based on ${citations.length} source(s).`
-    }
+    explanation = raw.explanation || `Assessment based on ${citations.length} source(s).`
+  } else {
+    verdict = "unverified"
+    explanation = "Verdict type is not recognised without evidence backing."
   }
 
   // Unverified verdicts carry zero confidence — we don't know what we don't know

@@ -108,4 +108,39 @@ describe("assessmentFromResponse", () => {
     expect(assessment.verdict).toBe("unverified")
     expect(assessment.confidence).toBe(0)
   })
+
+  it("preserves the backend's own explanation for a legitimate unverified verdict with citations", () => {
+    // Regression: a legitimate backend "unverified" (e.g. only secondary-news
+    // sources, no primary/fact-check source) was previously mistaken for an
+    // unrecognised/garbage verdict string once citations were present,
+    // discarding the backend's real explanation for a generic placeholder.
+    const assessment = assessmentFromResponse({
+      claim: "The Pitt is up for 25 Emmys.",
+      verdict: "unverified",
+      confidence: 0.2,
+      explanation: "Found 1 source(s) from secondary news, but no primary or fact-check sources. More authoritative evidence is needed.",
+      citations: [validCitation],
+      checkedAt: "2026-06-20T10:00:00Z",
+    })
+
+    expect(assessment.verdict).toBe("unverified")
+    expect(assessment.explanation).toBe(
+      "Found 1 source(s) from secondary news, but no primary or fact-check sources. More authoritative evidence is needed.",
+    )
+    expect(assessment.explanation).not.toContain("not recognised")
+  })
+
+  it("falls back to a generic explanation only for a truly unrecognised verdict string", () => {
+    const assessment = assessmentFromResponse({
+      claim: "Inflation was 2.3% in May 2026.",
+      verdict: "true" as unknown as "supported",
+      confidence: 0.9,
+      explanation: "Some model hallucinated this verdict string.",
+      citations: [validCitation],
+      checkedAt: "2026-06-20T10:00:00Z",
+    })
+
+    expect(assessment.verdict).toBe("unverified")
+    expect(assessment.explanation).toBe("Verdict type is not recognised without evidence backing.")
+  })
 })
