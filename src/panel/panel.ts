@@ -503,11 +503,23 @@ async function checkSingleClaim(claimText: string) {
 }
 
 /** A right-click "Check this claim" hands off the selection two ways: a
- * live runtime message (if this panel is already open) and a short-lived
+ * live runtime message (for an already-open panel) and a short-lived
  * storage entry (for a panel that was just opened and is only now loading).
- * Check storage once on load in case we're the latter.
+ * Both paths funnel through here rather than each calling checkSingleClaim
+ * directly — if the panel's own (re)load happens to race with the live
+ * message (both landing on the same freshly-loaded listener), storage is
+ * the single source of truth: whichever call reads-then-removes the
+ * pending entry first wins, and the other finds it already gone. The
+ * synchronous in-flight guard closes the remaining race within this one
+ * document, where both calls run on the same single JS thread: without
+ * it, two concurrent calls could both read the entry before either
+ * removes it, and both would proceed to check the same claim twice.
  */
+let handlingPendingSelection = false
+
 async function checkPendingSelection() {
+  if (handlingPendingSelection) return
+  handlingPendingSelection = true
   try {
     const result = await chrome.storage.local.get(PENDING_SELECTION_KEY)
     const pending = result[PENDING_SELECTION_KEY] as PendingSelection | undefined
@@ -516,12 +528,14 @@ async function checkPendingSelection() {
     await checkSingleClaim(pending.text)
   } catch {
     // No stored selection, or storage unavailable — nothing to do.
+  } finally {
+    handlingPendingSelection = false
   }
 }
 
-chrome.runtime.onMessage.addListener((message: { type: string; claim?: string }) => {
-  if (message.type === "CHECK_SELECTION" && typeof message.claim === "string") {
-    void checkSingleClaim(message.claim)
+chrome.runtime.onMessage.addListener((message: { type: string }) => {
+  if (message.type === "CHECK_SELECTION") {
+    void checkPendingSelection()
   }
 })
 

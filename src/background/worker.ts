@@ -69,9 +69,13 @@ chrome.action.onClicked.addListener(async (tab) => {
 
 // Right-click a text selection -> check it as a standalone claim. The side
 // panel may not be open (or even loaded) yet, so the selection is handed
-// off two ways: a live runtime message for an already-open panel, and a
-// short-lived storage entry the panel checks for on load — whichever gets
-// there first wins; storage is the reliable path for a cold panel open.
+// off via a short-lived storage entry — the reliable path for a cold panel
+// open — plus a live runtime message that just pokes an already-open panel
+// to go re-read that same storage entry now, rather than waiting for its
+// own next load. The panel treats storage as the single source of truth
+// (read-then-remove) precisely so this can't double-process one selection:
+// even if the panel's own load happens to race with this message, only one
+// of them finds the entry still there.
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId !== CONTEXT_MENU_ID || !tab?.id) return
   const claimText = info.selectionText?.trim()
@@ -83,9 +87,9 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   await chrome.storage.local.set({
     [PENDING_SELECTION_KEY]: { text: claimText, url: tab.url ?? "", ts: Date.now() },
   })
-  chrome.runtime.sendMessage({ type: "CHECK_SELECTION", claim: claimText }).catch(() => {
+  chrome.runtime.sendMessage({ type: "CHECK_SELECTION" }).catch(() => {
     // No listener yet — the panel was just opened and hasn't loaded. It
-    // will pick the same claim up from storage instead.
+    // will pick the same claim up from storage on load instead.
   })
 })
 
