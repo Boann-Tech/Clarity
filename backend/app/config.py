@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,7 +21,34 @@ def load_backend_env(env_file: Path | None = None) -> None:
     load_dotenv(resolved, override=False)
 
 
+def configure_logging() -> None:
+    """Attach a handler to the root logger so clarity.* logs are emitted.
+
+    Uvicorn's default logging setup (`logging.config.dictConfig`) only
+    configures its own `uvicorn`/`uvicorn.access`/`uvicorn.error` loggers —
+    it deliberately never touches the root logger. Every `clarity.*` logger
+    (evidence, api, llm, ...) has no handler of its own, so its records
+    propagate up to a root logger with zero handlers attached. Without this,
+    Python silently falls back to `logging.lastResort`, a bare stderr
+    handler with an effective level of WARNING: every logger.info() call
+    across the evidence pipeline vanishes with no error and no trace, while
+    logger.warning()/error() calls happen to still show up. That mismatch
+    is exactly what makes "I don't see any logging" reports so confusing —
+    some log lines work, most don't, for a reason invisible from the
+    application code itself.
+    """
+    level_name = os.getenv("CLARITY_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, None)
+    if not isinstance(level, int):
+        level = logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+    )
+
+
 load_backend_env()
+configure_logging()
 
 
 def _positive_int_env(name: str, default: int) -> int:

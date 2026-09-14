@@ -180,6 +180,10 @@ Models that reject `max_tokens` (some newer OpenAI models) can use `CLARITY_LLM_
 
 `GET /api/metrics` reports per-process counters: cache hit/miss, verdict distribution, rate-limit rejections, and LLM call counts + average latency by role (`normalize`, `classify`, `verdict`). Unauthenticated by default, matching `/api/health`; like the in-memory cache and rate limiter, counters are per-process and reset on restart — scrape each replica separately for a fleet-wide view. Firewall it separately from `/api/health` if you'd rather not expose call-volume counts publicly.
 
+### Pipeline logging
+
+`CLARITY_LOG_LEVEL=INFO` (the default) logs every stage of a claim check: each search backend's result count (or why it returned nothing — blocked, no key, request failure), each candidate URL's fetch outcome, and the final verdict/citation count. This requires an explicit `logging.basicConfig()` call at startup (in `app/config.py`) — uvicorn's own logging setup only configures its `uvicorn.*` loggers and never touches the root logger, so without this, `clarity.*` `INFO` logs silently vanish (Python's fallback handler only surfaces `WARNING`+) while `WARNING`/`ERROR` logs keep working, which is a confusing thing to debug from the outside. Set `CLARITY_LOG_LEVEL=WARNING` to quiet it down to failures only.
+
 ## Architecture
 
 ```
