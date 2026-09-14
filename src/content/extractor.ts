@@ -39,6 +39,20 @@ function detectPageKind(): PagePayload["kind"] {
   return "article"
 }
 
+/**
+ * Rendered text of an element, respecting layout-inserted whitespace at
+ * block boundaries (paragraphs, list items, etc). Prefer this over
+ * `.textContent`, which concatenates every descendant text node with no
+ * separator at all — silently gluing adjacent paragraphs together
+ * ("...credit cards.The spike...") and defeating the sentence-boundary
+ * splitter downstream (extractCandidates in protocol.ts), which requires
+ * whitespace after sentence punctuation to find a split point.
+ */
+function elementText(el: Element | null | undefined): string {
+  if (!el) return ""
+  return ((el as HTMLElement).innerText ?? el.textContent ?? "").trim()
+}
+
 /* ─── Platform-specific extractors ─── */
 
 function extractTwitterText(): string {
@@ -48,15 +62,16 @@ function extractTwitterText(): string {
   const tweetArticles = document.querySelectorAll('article[data-testid="tweet"]')
   if (tweetArticles.length > 0) {
     tweetArticles.forEach((article) => {
-      const textEl = article.querySelector('[data-testid="tweetText"]')
-      if (textEl?.textContent) tweets.push(textEl.textContent.trim())
+      const text = elementText(article.querySelector('[data-testid="tweetText"]'))
+      if (text) tweets.push(text)
     })
     return tweets.join("\n")
   }
   // Fallback: general tweet divs
   const tweetDivs = document.querySelectorAll('div[data-testid="tweetText"]')
   tweetDivs.forEach((el) => {
-    if (el.textContent) tweets.push(el.textContent.trim())
+    const text = elementText(el)
+    if (text) tweets.push(text)
   })
   return tweets.join("\n")
 }
@@ -68,22 +83,23 @@ function extractRedditText(): string {
   const titleEl = document.querySelector(
     'shreddit-post[title], h1[slot="title"], div[data-testid="post-title"] a, h1',
   )
-  if (titleEl?.textContent) parts.push(titleEl.textContent.trim())
+  const titleText = elementText(titleEl)
+  if (titleText) parts.push(titleText)
 
   // Post body
   const bodyEl = document.querySelector(
     'shreddit-post [slot="text-body"], div[data-testid="post-container"] div[slot="text-body"], div.entry div.usertext-body div.md, div[data-testid="comment"]',
   )
-  if (bodyEl?.textContent) parts.push(bodyEl.textContent.trim())
+  const bodyText = elementText(bodyEl)
+  if (bodyText) parts.push(bodyText)
 
   // Comment text if visible
   const comments = document.querySelectorAll(
     'div[data-testid="comment"] div.md, shreddit-comment [slot="comment"]',
   )
   comments.forEach((el) => {
-    if (el.textContent && el.textContent.length > 40) {
-      parts.push(el.textContent.trim())
-    }
+    const text = elementText(el)
+    if (text.length > 40) parts.push(text)
   })
 
   return parts.join("\n")
@@ -97,9 +113,8 @@ function extractFacebookText(): string {
     'div[data-ad-preview="message"], div[data-ad-rendering-role="story_message"], div.userContent, div[role="article"] div[dir="auto"]',
   )
   postMessages.forEach((el) => {
-    if (el.textContent && el.textContent.length > 30) {
-      parts.push(el.textContent.trim())
-    }
+    const text = elementText(el)
+    if (text.length > 30) parts.push(text)
   })
 
   return parts.slice(0, 10).join("\n") // limit to 10 posts
@@ -119,11 +134,8 @@ function extractArticleText(): string {
   ]
 
   for (const sel of selectors) {
-    const el = document.querySelector(sel)
-    if (el?.textContent) {
-      const text = el.textContent.trim()
-      if (text.length > 100) return text
-    }
+    const text = elementText(document.querySelector(sel))
+    if (text.length > 100) return text
   }
 
   const body = document.body
