@@ -196,13 +196,159 @@ function collectPagePayload(): PagePayload {
   }
 }
 
+/* ───────── Highlight checked claims on the page ───────── */
+
+const HIGHLIGHT_CLASS = "clarity-hl"
+const HIGHLIGHT_STYLE_ID = "clarity-hl-style"
+
+function ensureHighlightStyles(): void {
+  if (document.getElementById(HIGHLIGHT_STYLE_ID)) return
+  const style = document.createElement("style")
+  style.id = HIGHLIGHT_STYLE_ID
+  style.textContent = `
+    .${HIGHLIGHT_CLASS} { border-radius: 2px; box-shadow: 0 0 0 1px rgba(0,0,0,0.06); }
+    .${HIGHLIGHT_CLASS}-supported { background: rgba(34,197,94,0.30); }
+    .${HIGHLIGHT_CLASS}-contradicted { background: rgba(239,68,68,0.30); }
+    .${HIGHLIGHT_CLASS}-misleading { background: rgba(245,158,11,0.32); }
+    .${HIGHLIGHT_CLASS}-unverified { background: rgba(148,163,184,0.32); }
+    .${HIGHLIGHT_CLASS}-not_checkable { background: rgba(148,163,184,0.18); }
+  `
+  document.documentElement.appendChild(style)
+}
+
+/** Remove any highlights from a previous check, merging split text nodes back. */
+function clearHighlights(): void {
+  document.querySelectorAll(`.${HIGHLIGHT_CLASS}`).forEach((el) => {
+    const parent = el.parentNode
+    if (!parent) return
+    parent.replaceChild(document.createTextNode(el.textContent ?? ""), el)
+    parent.normalize()
+  })
+}
+
+function normalizeForMatch(s: string): string {
+  return s.replace(/\s+/g, " ").trim().toLowerCase()
+}
+
+/**
+ * Wrap the first occurrence of `claimText` found inside a single text node
+ * in a highlight span. Deliberately single-node only (never spans multiple
+ * DOM nodes/elements) — Range.surroundContents throws when a range doesn't
+ * cleanly contain whole non-text nodes, which a naive multi-node wrap would
+ * hit constantly on real article markup (inline links, bold/italic spans).
+ * A claim split across such inline markup is simply left unhighlighted;
+ * this is a "best effort" visual aid, not a guarantee.
+ */
+function highlightClaimInNode(textNode: Text, claimText: string, verdict: string): boolean {
+  const raw = textNode.nodeValue ?? ""
+  const target = normalizeForMatch(claimText)
+  if (!target) return false
+  const normRaw = normalizeForMatch(raw)
+  const matchIndex = normRaw.indexOf(target)
+  if (matchIndex === -1) return false
+
+  // Map an index into the whitespace-collapsed normRaw string back to the
+  // corresponding index in the original (uncollapsed) raw string.
+  const rawIndexAt = (normIndex: number): number => {
+    let n = 0
+    let inRun = false
+    for (let r = 0; r < raw.length; r++) {
+      const isSpace = /\s/.test(raw[r])
+      if (isSpace) {
+        if (!inRun) {
+          if (n === normIndex) return r
+          n++
+          inRun = true
+        }
+      } else {
+        if (n === normIndex) return r
+        n++
+        inRun = false
+      }
+    }
+    return raw.length
+  }
+
+  const start = rawIndexAt(matchIndex)
+  const end = rawIndexAt(matchIndex + target.length)
+  if (end <= start) return false
+
+  const range = document.createRange()
+  range.setStart(textNode, start)
+  range.setEnd(textNode, end)
+
+  const span = document.createElement("span")
+  span.className = `${HIGHLIGHT_CLASS} ${HIGHLIGHT_CLASS}-${verdict}`
+  span.title = `Clarity checked this claim: ${verdict.replace(/_/g, " ")}`
+  try {
+    range.surroundContents(span)
+  } catch {
+    return false
+  }
+  return true
+}
+
+function collectTextNodes(root: Node): Text[] {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const tag = node.parentElement?.tagName
+      if (tag === "SCRIPT" || tag === "STYLE" || tag === "NOSCRIPT" || tag === "TEXTAREA") {
+        return NodeFilter.FILTER_REJECT
+      }
+      if (!node.nodeValue || node.nodeValue.trim().length < 20) return NodeFilter.FILTER_REJECT
+      return NodeFilter.FILTER_ACCEPT
+    },
+  })
+  const nodes: Text[] = []
+  let node: Node | null
+  while ((node = walker.nextNode())) nodes.push(node as Text)
+  return nodes
+}
+
+/** Highlight each checked claim's text where it's found on the page. Best
+ * effort: claims not found verbatim (rare rewording, or split across inline
+ * markup) are silently skipped. Returns how many were highlighted.
+ */
+function highlightClaimsOnPage(claims: Array<{ text: string; verdict: string }>): number {
+  clearHighlights()
+  if (claims.length === 0) return 0
+  ensureHighlightStyles()
+
+  let highlighted = 0
+  for (const { text, verdict } of claims) {
+    const textNodes = collectTextNodes(document.body)
+    for (const node of textNodes) {
+      if (highlightClaimInNode(node, text, verdict)) {
+        highlighted++
+        break
+      }
+    }
+  }
+  return highlighted
+}
+
 /* ───────── Listen for requests from background ───────── */
 
 chrome.runtime.onMessage.addListener(
-  (message: { type: string }, _sender, sendResponse) => {
+  (
+    message: { type: string; claims?: Array<{ text: string; verdict: string }> },
+    _sender,
+    sendResponse,
+  ) => {
     if (message.type === "GET_PAGE_TEXT") {
       const payload = collectPagePayload()
       sendResponse(payload)
+      return
+    }
+    if (message.type === "HIGHLIGHT_CLAIMS") {
+      const highlighted = highlightClaimsOnPage(message.claims ?? [])
+      sendResponse({ highlighted })
+      return
+    }
+    if (message.type === "CLEAR_HIGHLIGHTS") {
+      clearHighlights()
+      sendResponse({ ok: true })
+      return
     }
   },
 )

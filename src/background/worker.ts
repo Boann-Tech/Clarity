@@ -42,10 +42,18 @@ async function getSettings(): Promise<AppSettings> {
 const claimCache = new Map<string, { result: ClaimCheck; timestamp: number }>()
 const CACHE_TTL_MS = 30 * 60 * 1000 // 30 minutes
 
+const CONTEXT_MENU_ID = "clarity-check-selection"
+const PENDING_SELECTION_KEY = "clarity_pending_selection"
+
 /* ───────── Entry point ───────── */
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[Clarity] Extension installed. Side panel available.")
+  chrome.contextMenus.create({
+    id: CONTEXT_MENU_ID,
+    title: 'Check this claim with Clarity: "%s"',
+    contexts: ["selection"],
+  })
 })
 
 // Open side panel when the toolbar icon is clicked
@@ -59,15 +67,43 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 })
 
+// Right-click a text selection -> check it as a standalone claim. The side
+// panel may not be open (or even loaded) yet, so the selection is handed
+// off two ways: a live runtime message for an already-open panel, and a
+// short-lived storage entry the panel checks for on load — whichever gets
+// there first wins; storage is the reliable path for a cold panel open.
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId !== CONTEXT_MENU_ID || !tab?.id) return
+  const claimText = info.selectionText?.trim()
+  if (!claimText) return
+
+  await chrome.sidePanel.open({ tabId: tab.id })
+  await chrome.sidePanel.setOptions({ tabId: tab.id, path: "panel/panel.html" })
+
+  await chrome.storage.local.set({
+    [PENDING_SELECTION_KEY]: { text: claimText, url: tab.url ?? "", ts: Date.now() },
+  })
+  chrome.runtime.sendMessage({ type: "CHECK_SELECTION", claim: claimText }).catch(() => {
+    // No listener yet — the panel was just opened and hasn't loaded. It
+    // will pick the same claim up from storage instead.
+  })
+})
+
 /* ───────── Message handling ───────── */
 
 chrome.runtime.onMessage.addListener((
-  message: { type: string; payload?: PagePayload; data?: Record<string, unknown>; settings?: { maxClaims?: number } },
+  message: { type: string; payload?: PagePayload; claim?: string; data?: Record<string, unknown>; settings?: { maxClaims?: number } },
   _sender,
   sendResponse,
 ) => {
   if (message.type === "CHECK_PAGE" && message.payload) {
     handlePageCheck(message.payload, message.settings?.maxClaims)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ error: err.message }))
+    return true
+  }
+  if (message.type === "CHECK_CLAIM_TEXT" && typeof message.claim === "string") {
+    handleSingleClaimCheck(message.claim)
       .then(sendResponse)
       .catch((err) => sendResponse({ error: err.message }))
     return true
@@ -103,9 +139,22 @@ async function handlePageCheck(payload: PagePayload, maxClaims = 10): Promise<{ 
   const candidates = extractCandidates(payload)
   const limit = Math.min(Math.max(maxClaims, 1), 20)
   const checkableClaims = selectCheckableClaims(candidates, limit)
+  return { claims: await checkClaims(checkableClaims) }
+}
 
+// A user-selected claim (via the right-click context menu) is checked
+// verbatim: it skips extractCandidates/selectCheckableClaims entirely,
+// since the user explicitly chose this exact text rather than Clarity
+// guessing it's checkable from page-scan heuristics.
+async function handleSingleClaimCheck(claimText: string): Promise<{ claims: ClaimCheck[]; error?: string }> {
+  const trimmed = claimText.trim().slice(0, 500)
+  if (!trimmed) return { claims: [] }
+  return { claims: await checkClaims([trimmed]) }
+}
+
+async function checkClaims(checkableClaims: string[]): Promise<ClaimCheck[]> {
   if (checkableClaims.length === 0) {
-    return { claims: [] }
+    return []
   }
 
   const resolved = new Map<string, ClaimCheck>()
@@ -159,7 +208,7 @@ async function handlePageCheck(payload: PagePayload, maxClaims = 10): Promise<{ 
     )
   }
 
-  return { claims: checkableClaims.map((claim) => resolved.get(claim)!) }
+  return checkableClaims.map((claim) => resolved.get(claim)!)
 }
 
 /* ───────── Evidence retrieval via backend API ───────── */

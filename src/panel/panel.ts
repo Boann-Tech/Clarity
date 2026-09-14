@@ -48,7 +48,9 @@ const clearHistoryBtn = document.getElementById("clearHistoryBtn") as HTMLButton
 
 const HISTORY_KEY = "clarity_claim_history"
 const SETTINGS_KEY = "clarity_settings"
+const PENDING_SELECTION_KEY = "clarity_pending_selection"
 const MAX_HISTORY = 50
+const PENDING_SELECTION_MAX_AGE_MS = 15_000
 
 interface HistoryEntry {
   claim: string
@@ -57,6 +59,12 @@ interface HistoryEntry {
   explanation: string
   checkedAt: string
   url: string
+}
+
+interface PendingSelection {
+  text: string
+  url: string
+  ts: number
 }
 
 /* ───────── Tab switching ───────── */
@@ -229,6 +237,102 @@ function escapeHtml(s: string): string {
 
 /* ───────── Render results ───────── */
 
+function buildClaimCard(c: ClaimCheck): HTMLDivElement {
+  const card = document.createElement("div")
+  card.className = "claim-card"
+
+  // Claim quote
+  const quote = document.createElement("div")
+  quote.className = "claim-quote"
+  quote.textContent = `"${c.claim}"`
+  card.appendChild(quote)
+
+  // Verdict row
+  const verdictRow = document.createElement("div")
+  verdictRow.className = "verdict-row"
+  const vLabel = document.createElement("span")
+  vLabel.className = `verdict-label ${verdictClass(c.verdict)}`
+  vLabel.textContent = verdictLabel(c.verdict)
+  verdictRow.appendChild(vLabel)
+
+  // Confidence score
+  const confScore = document.createElement("span")
+  confScore.style.cssText = "font-size:11px;color:var(--text-muted);margin-left:auto;"
+  confScore.textContent = `${Math.round(c.confidence * 100)}% confidence`
+  verdictRow.appendChild(confScore)
+
+  card.appendChild(verdictRow)
+
+  // Confidence bar
+  if (c.confidence > 0) {
+    const bar = document.createElement("div")
+    bar.className = "confidence-bar"
+    const fill = document.createElement("div")
+    fill.className = "confidence-fill"
+    fill.style.width = `${c.confidence * 100}%`
+    fill.style.background = confidenceColor(c.confidence)
+    bar.appendChild(fill)
+    card.appendChild(bar)
+  }
+
+  // Explanation
+  const expl = document.createElement("div")
+  expl.className = "explanation"
+  expl.textContent = c.explanation
+  card.appendChild(expl)
+
+  // Citations
+  if (c.citations.length > 0) {
+    const citSection = document.createElement("div")
+    citSection.className = "citations"
+    for (const src of c.citations) {
+      const cit = document.createElement("div")
+      cit.className = "citation"
+      const link = document.createElement("a")
+      link.href = src.url
+      link.textContent = src.title
+      link.target = "_blank"
+      cit.appendChild(link)
+
+      const meta = document.createElement("div")
+      meta.className = "citation-meta"
+      meta.textContent = `${src.publisher} · ${src.publishedDate || "no date"} · ${src.sourceTier}`
+      cit.appendChild(meta)
+
+      citSection.appendChild(cit)
+    }
+    card.appendChild(citSection)
+  }
+
+  // Needs human review flag
+  if (c.needsHumanReview) {
+    const hr = document.createElement("div")
+    hr.style.cssText = "font-size:11px; color:var(--amber); margin-top:6px;"
+    hr.textContent = "⚑ Review recommended — confidence is low or evidence is limited."
+    card.appendChild(hr)
+  }
+
+  // Report incorrect button
+  const reportRow = document.createElement("div")
+  reportRow.style.cssText = "margin-top:8px; font-size:11px;"
+  const reportLink = document.createElement("a")
+  reportLink.href = `mailto:clarity@boanntech.com?subject=Incorrect%20verdict%20report&body=Claim:%20${encodeURIComponent(c.claim)}%0AVerdict:%20${c.verdict}%0AConfidence:%20${c.confidence}%0A`
+  reportLink.textContent = "Report incorrect"
+  reportLink.style.cssText = "color:var(--text-muted);text-decoration:none;"
+  reportLink.addEventListener("click", () => {
+    setTimeout(() => {
+      const thanks = document.createElement("span")
+      thanks.textContent = " ✓ Thanks"
+      thanks.style.cssText = "color:var(--green);"
+      reportRow.appendChild(thanks)
+    }, 100)
+  })
+  reportRow.appendChild(reportLink)
+  card.appendChild(reportRow)
+
+  return card
+}
+
 function renderClaims(claims: ClaimCheck[]) {
   emptyState.style.display = "none"
 
@@ -242,99 +346,29 @@ function renderClaims(claims: ClaimCheck[]) {
   }
 
   for (const c of claims) {
-    const card = document.createElement("div")
-    card.className = "claim-card"
+    resultsEl.appendChild(buildClaimCard(c))
+  }
+}
 
-    // Claim quote
-    const quote = document.createElement("div")
-    quote.className = "claim-quote"
-    quote.textContent = `"${c.claim}"`
-    card.appendChild(quote)
+/** Add one ad-hoc claim (from the right-click "Check this claim" menu) to
+ * the top of the results without discarding whatever's already there.
+ */
+function prependClaim(claim: ClaimCheck) {
+  emptyState.style.display = "none"
+  resultsEl.insertBefore(buildClaimCard(claim), resultsEl.firstChild)
+}
 
-    // Verdict row
-    const verdictRow = document.createElement("div")
-    verdictRow.className = "verdict-row"
-    const vLabel = document.createElement("span")
-    vLabel.className = `verdict-label ${verdictClass(c.verdict)}`
-    vLabel.textContent = verdictLabel(c.verdict)
-    verdictRow.appendChild(vLabel)
+/* ───────── Highlight checked claims on the page ───────── */
 
-    // Confidence score
-    const confScore = document.createElement("span")
-    confScore.style.cssText = "font-size:11px;color:var(--text-muted);margin-left:auto;"
-    confScore.textContent = `${Math.round(c.confidence * 100)}% confidence`
-    verdictRow.appendChild(confScore)
-
-    card.appendChild(verdictRow)
-
-    // Confidence bar
-    if (c.confidence > 0) {
-      const bar = document.createElement("div")
-      bar.className = "confidence-bar"
-      const fill = document.createElement("div")
-      fill.className = "confidence-fill"
-      fill.style.width = `${c.confidence * 100}%`
-      fill.style.background = confidenceColor(c.confidence)
-      bar.appendChild(fill)
-      card.appendChild(bar)
-    }
-
-    // Explanation
-    const expl = document.createElement("div")
-    expl.className = "explanation"
-    expl.textContent = c.explanation
-    card.appendChild(expl)
-
-    // Citations
-    if (c.citations.length > 0) {
-      const citSection = document.createElement("div")
-      citSection.className = "citations"
-      for (const src of c.citations) {
-        const cit = document.createElement("div")
-        cit.className = "citation"
-        const link = document.createElement("a")
-        link.href = src.url
-        link.textContent = src.title
-        link.target = "_blank"
-        cit.appendChild(link)
-
-        const meta = document.createElement("div")
-        meta.className = "citation-meta"
-        meta.textContent = `${src.publisher} · ${src.publishedDate || "no date"} · ${src.sourceTier}`
-        cit.appendChild(meta)
-
-        citSection.appendChild(cit)
-      }
-      card.appendChild(citSection)
-    }
-
-    // Needs human review flag
-    if (c.needsHumanReview) {
-      const hr = document.createElement("div")
-      hr.style.cssText = "font-size:11px; color:var(--amber); margin-top:6px;"
-      hr.textContent = "⚑ Review recommended — confidence is low or evidence is limited."
-      card.appendChild(hr)
-    }
-
-    // Report incorrect button
-    const reportRow = document.createElement("div")
-    reportRow.style.cssText = "margin-top:8px; font-size:11px;"
-    const reportLink = document.createElement("a")
-    reportLink.href = `mailto:clarity@boanntech.com?subject=Incorrect%20verdict%20report&body=Claim:%20${encodeURIComponent(c.claim)}%0AVerdict:%20${c.verdict}%0AConfidence:%20${c.confidence}%0A`
-    reportLink.textContent = "Report incorrect"
-    reportLink.style.cssText = "color:var(--text-muted);text-decoration:none;"
-    reportLink.addEventListener("click", () => {
-      setTimeout(() => {
-        const thanks = document.createElement("span")
-        thanks.textContent = " ✓ Thanks"
-        thanks.style.cssText = "color:var(--green);"
-        reportRow.appendChild(thanks)
-      }, 100)
-    })
-    reportRow.appendChild(reportLink)
-    card.appendChild(reportRow)
-
-    resultsEl.appendChild(card)
+async function highlightCheckedClaims(tabId: number, claims: ClaimCheck[]) {
+  const targets = claims
+    .filter((c) => c.verdict !== "not_checkable")
+    .map((c) => ({ text: c.claim, verdict: c.verdict }))
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: "HIGHLIGHT_CLAIMS", claims: targets })
+  } catch {
+    // Content script may be gone (page navigated away mid-check) — highlighting
+    // is a visual aid, not required for the check itself to have succeeded.
   }
 }
 
@@ -405,6 +439,7 @@ async function checkPage() {
     }
 
     renderClaims(response.claims)
+    void highlightCheckedClaims(tab.id, response.claims)
 
     // Save to history — one merged write, newest first
     const entries: HistoryEntry[] = response.claims.map((c: ClaimCheck) => ({
@@ -427,6 +462,70 @@ async function checkPage() {
   }
 }
 
+/* ───────── Check a single selected claim (right-click menu) ───────── */
+
+async function checkSingleClaim(claimText: string) {
+  const trimmed = claimText.trim()
+  if (!trimmed) return
+
+  showTab("check")
+  setStatus("checking selection...", true)
+
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "CHECK_CLAIM_TEXT", claim: trimmed })
+    if (response?.error) {
+      setStatus("error")
+      console.error("[Clarity] selection check error:", response.error)
+      return
+    }
+
+    const claims: ClaimCheck[] = response.claims ?? []
+    setStatus(claims.length > 0 ? "1 claim checked" : "not checkable")
+    for (const c of claims) prependClaim(c)
+
+    if (claims.length > 0) {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+      const entries: HistoryEntry[] = claims.map((c) => ({
+        claim: c.claim,
+        verdict: c.verdict,
+        confidence: c.confidence,
+        explanation: c.explanation,
+        checkedAt: c.checkedAt,
+        url: tab?.url ?? "",
+      }))
+      const merged = mergeHistory(await getHistory(), entries, MAX_HISTORY)
+      await chrome.storage.local.set({ [HISTORY_KEY]: merged })
+    }
+  } catch (err) {
+    setStatus("error")
+    console.error("[Clarity] selection check failed:", err)
+  }
+}
+
+/** A right-click "Check this claim" hands off the selection two ways: a
+ * live runtime message (if this panel is already open) and a short-lived
+ * storage entry (for a panel that was just opened and is only now loading).
+ * Check storage once on load in case we're the latter.
+ */
+async function checkPendingSelection() {
+  try {
+    const result = await chrome.storage.local.get(PENDING_SELECTION_KEY)
+    const pending = result[PENDING_SELECTION_KEY] as PendingSelection | undefined
+    if (!pending || Date.now() - pending.ts > PENDING_SELECTION_MAX_AGE_MS) return
+    await chrome.storage.local.remove(PENDING_SELECTION_KEY)
+    await checkSingleClaim(pending.text)
+  } catch {
+    // No stored selection, or storage unavailable — nothing to do.
+  }
+}
+
+chrome.runtime.onMessage.addListener((message: { type: string; claim?: string }) => {
+  if (message.type === "CHECK_SELECTION" && typeof message.claim === "string") {
+    void checkSingleClaim(message.claim)
+  }
+})
+
 /* ───────── Events ───────── */
 
 checkBtn.addEventListener("click", checkPage)
+void checkPendingSelection()
